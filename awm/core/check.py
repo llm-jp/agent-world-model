@@ -20,7 +20,7 @@ def run(config: Config):
     if running and tools_count > 0:
         for tool in tools:
             logger.info(f"  - {tool['name']}: {tool.get('description', '')}")
-        
+
         logger.success(f"Server is running at {config.url}")
         logger.info(f"Tools count: {tools_count}")
     else:

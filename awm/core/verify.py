@@ -31,7 +31,8 @@ from awm.tools import (
 
 class VerificationMode(Enum):
     sql = "sql"  # code-augmented verification (returns info dict for LLM judgment)
-    code = "code" # purely code-based verification (returns complete/others)
+    code = "code"  # purely code-based verification (returns complete/others)
+
 
 @dataclass
 class Config:
@@ -64,7 +65,9 @@ class Config:
                         "Please set: AWM_SYN_LLM_PROVIDER=azure, AZURE_ENDPOINT_URL, AZURE_OPENAI_API_KEY"
                     )
             else:
-                if not os.environ.get("OPENAI_API_KEY") and not os.environ.get("OPENAI_BASE_URL"):
+                if not os.environ.get("OPENAI_API_KEY") and not os.environ.get(
+                    "OPENAI_BASE_URL"
+                ):
                     raise ValueError(
                         "SQL verification mode requires LLM config. Missing env vars.\n"
                         "Please set either:\n"
@@ -76,7 +79,6 @@ class Config:
                     "SQL verification mode requires AWM_SYN_OVERRIDE_MODEL to be set.\n"
                     "Example: export AWM_SYN_OVERRIDE_MODEL=gpt-5"
                 )
-
 
 
 def _call_verifier_func(verify_func, initial_db_path, final_db_path, final_answer=None):
@@ -104,9 +106,15 @@ def _call_verifier_func(verify_func, initial_db_path, final_db_path, final_answe
 def execute_sql_verifier(verifier_code, function_name, initial_db_path, final_db_path):
     """Execute SQL-mode verifier code that compares initial vs final DB state."""
     if not os.path.exists(initial_db_path):
-        return {"execution_status": "error", "error_message": f"Initial DB not found: {initial_db_path}"}
+        return {
+            "execution_status": "error",
+            "error_message": f"Initial DB not found: {initial_db_path}",
+        }
     if not os.path.exists(final_db_path):
-        return {"execution_status": "error", "error_message": f"Final DB not found: {final_db_path}"}
+        return {
+            "execution_status": "error",
+            "error_message": f"Final DB not found: {final_db_path}",
+        }
 
     original_modes = {}
     for path in [initial_db_path, final_db_path]:
@@ -127,7 +135,10 @@ def execute_sql_verifier(verifier_code, function_name, initial_db_path, final_db
 
         verify_func = namespace.get(function_name)
         if not verify_func:
-            return {"execution_status": "error", "error_message": f"Function '{function_name}' not found"}
+            return {
+                "execution_status": "error",
+                "error_message": f"Function '{function_name}' not found",
+            }
 
         result = _call_verifier_func(verify_func, initial_db_path, final_db_path)
 
@@ -148,12 +159,22 @@ def execute_sql_verifier(verifier_code, function_name, initial_db_path, final_db
                 pass
 
 
-def execute_code_verifier(verifier_code, function_name, initial_db_path, final_db_path, final_answer=None):
+def execute_code_verifier(
+    verifier_code, function_name, initial_db_path, final_db_path, final_answer=None
+):
     """Execute code-mode verifier that returns {"result": "complete"|"others"}."""
     if not os.path.exists(initial_db_path):
-        return {"result": "others", "execution_status": "error", "error_message": f"Initial DB not found: {initial_db_path}"}
+        return {
+            "result": "others",
+            "execution_status": "error",
+            "error_message": f"Initial DB not found: {initial_db_path}",
+        }
     if not os.path.exists(final_db_path):
-        return {"result": "others", "execution_status": "error", "error_message": f"Final DB not found: {final_db_path}"}
+        return {
+            "result": "others",
+            "execution_status": "error",
+            "error_message": f"Final DB not found: {final_db_path}",
+        }
 
     original_modes = {}
     for path in [initial_db_path, final_db_path]:
@@ -175,21 +196,39 @@ def execute_code_verifier(verifier_code, function_name, initial_db_path, final_d
 
         verify_func = namespace.get(function_name)
         if not verify_func:
-            return {"result": "others", "execution_status": "error", "error_message": f"Function '{function_name}' not found"}
+            return {
+                "result": "others",
+                "execution_status": "error",
+                "error_message": f"Function '{function_name}' not found",
+            }
 
-        result = _call_verifier_func(verify_func, initial_db_path, final_db_path, final_answer)
+        result = _call_verifier_func(
+            verify_func, initial_db_path, final_db_path, final_answer
+        )
 
         if not isinstance(result, dict) or "result" not in result:
-            return {"result": "others", "execution_status": "error", "error_message": f"Invalid return format: {type(result).__name__}"}
+            return {
+                "result": "others",
+                "execution_status": "error",
+                "error_message": f"Invalid return format: {type(result).__name__}",
+            }
 
         result_value = result.get("result", "others")
         if result_value not in ("complete", "others"):
             result_value = "others"
 
-        return {"result": result_value, "execution_status": "success", "raw_result": result}
+        return {
+            "result": result_value,
+            "execution_status": "success",
+            "raw_result": result,
+        }
 
     except Exception as e:
-        return {"result": "others", "execution_status": "error", "error_message": f"Execution error: {e}"}
+        return {
+            "result": "others",
+            "execution_status": "error",
+            "error_message": f"Execution error: {e}",
+        }
     finally:
         for path, mode in original_modes.items():
             try:
@@ -198,7 +237,9 @@ def execute_code_verifier(verifier_code, function_name, initial_db_path, final_d
                 pass
 
 
-def run_verifier(verifier_entry, verifier_mode, initial_db_path, final_db_path, final_answer=None):
+def run_verifier(
+    verifier_entry, verifier_mode, initial_db_path, final_db_path, final_answer=None
+):
     """Run the appropriate verifier and return (reward_type, details)."""
     verification = verifier_entry.get("verification", {})
     code = verification.get("code", "")
@@ -206,7 +247,9 @@ def run_verifier(verifier_entry, verifier_mode, initial_db_path, final_db_path, 
     if not code or not isinstance(code, str) or len(code.strip()) < 10:
         return "judge_error", {"error": "No valid verifier code found"}
 
-    default_func = "verify_task_completion" if verifier_mode == "code" else "verify_task"
+    default_func = (
+        "verify_task_completion" if verifier_mode == "code" else "verify_task"
+    )
     func_name = default_func
     for line in code.split("\n"):
         line = line.strip()
@@ -215,7 +258,9 @@ def run_verifier(verifier_entry, verifier_mode, initial_db_path, final_db_path, 
             break
 
     if verifier_mode == "code":
-        result = execute_code_verifier(code, func_name, initial_db_path, final_db_path, final_answer)
+        result = execute_code_verifier(
+            code, func_name, initial_db_path, final_db_path, final_answer
+        )
         if result.get("execution_status") == "error":
             return "judge_error", result
         return result.get("result", "others"), result
@@ -227,10 +272,14 @@ def run_verifier(verifier_entry, verifier_mode, initial_db_path, final_db_path, 
     return "incomplete", result
 
 
-async def run_llm_judge(task, verifier_result, llm_base_url, llm_api_key, llm_model, trajectory=None):
+async def run_llm_judge(
+    task, verifier_result, llm_base_url, llm_api_key, llm_model, trajectory=None
+):
     """Run LLM-as-a-judge combining agent trajectory AND SQL verification results."""
     if not llm_base_url or not llm_model:
-        return "judge_error", {"error": "LLM endpoint not configured for sql verifier mode"}
+        return "judge_error", {
+            "error": "LLM endpoint not configured for sql verifier mode"
+        }
 
     llm_base_url = normalize_azure_url(llm_base_url)
 
@@ -284,11 +333,15 @@ async def run_llm_judge(task, verifier_result, llm_base_url, llm_api_key, llm_mo
             "trajectory": trajectory or [],
         }
 
-        verification_json = sanitize_for_json({
-            "code_execution_result": verifier_result,
-        })
+        verification_json = sanitize_for_json(
+            {
+                "code_execution_result": verifier_result,
+            }
+        )
         try:
-            verification_json_str = json.dumps(verification_json, ensure_ascii=False, indent=2, default=str)
+            verification_json_str = json.dumps(
+                verification_json, ensure_ascii=False, indent=2, default=str
+            )
         except Exception:
             verification_json_str = str(verification_json)
 
@@ -318,9 +371,13 @@ async def run_llm_judge(task, verifier_result, llm_base_url, llm_api_key, llm_mo
                 try:
                     result = json.loads(match.group())
                 except json.JSONDecodeError:
-                    return "judge_error", {"error": f"Failed to parse LLM response: {content}"}
+                    return "judge_error", {
+                        "error": f"Failed to parse LLM response: {content}"
+                    }
             else:
-                return "judge_error", {"error": f"Failed to parse LLM response: {content}"}
+                return "judge_error", {
+                    "error": f"Failed to parse LLM response: {content}"
+                }
 
         classification = result.get("classification", "judge_error").lower().strip()
         valid = {"complete", "incomplete", "server_error", "agent_error", "judge_error"}
@@ -332,8 +389,6 @@ async def run_llm_judge(task, verifier_result, llm_base_url, llm_api_key, llm_mo
     except Exception as e:
         logger.error(f"LLM judge failed: {e}")
         return "judge_error", {"error": str(e)}
-
-
 
 
 async def run_verify(config: Config):
@@ -351,7 +406,7 @@ async def run_verify(config: Config):
     if not os.path.exists(trajectory_path):
         raise FileNotFoundError(f"trajectory.json not found in {run_dir}")
 
-    with open(trajectory_path) as f:
+    with open(trajectory_path, encoding="utf-8") as f:
         trajectory_data = json.load(f)
 
     scenario = trajectory_data.get("scenario")
@@ -374,7 +429,9 @@ async def run_verify(config: Config):
 
     # Load verifier data
     if mode == "code":
-        verifier_file = config.verifier_code_path or "./outputs/gen_verifier.pure_code.jsonl"
+        verifier_file = (
+            config.verifier_code_path or "./outputs/gen_verifier.pure_code.jsonl"
+        )
     else:
         verifier_file = config.verifier_path or "./outputs/gen_verifier.jsonl"
 
@@ -385,9 +442,13 @@ async def run_verify(config: Config):
     verifier_entry = find_scenario_entry(verifier_data, scenario, task_idx=task_id)
 
     if not verifier_entry:
-        raise ValueError(f"No verifier found for scenario={scenario}, task_id={task_id} in {verifier_file}")
+        raise ValueError(
+            f"No verifier found for scenario={scenario}, task_id={task_id} in {verifier_file}"
+        )
 
-    logger.info(f"Running {mode} verification for scenario={scenario}, task_id={task_id}")
+    logger.info(
+        f"Running {mode} verification for scenario={scenario}, task_id={task_id}"
+    )
 
     # Extract final answer from trajectory (last assistant message)
     final_answer = ""
@@ -402,7 +463,9 @@ async def run_verify(config: Config):
     )
 
     logger.info(f"Verifier result: reward_type={reward_type}")
-    logger.info(f"Verify result: {json.dumps(verify_result, ensure_ascii=False, default=str)[:500]}")
+    logger.info(
+        f"Verify result: {json.dumps(verify_result, ensure_ascii=False, default=str)[:500]}"
+    )
 
     output = {
         "scenario": scenario,
@@ -446,5 +509,6 @@ def run(config: Config):
 
 if __name__ == "__main__":
     from simpleArgParser import parse_args
+
     config: Config = parse_args(Config)
     run(config)

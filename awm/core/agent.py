@@ -2,6 +2,7 @@
 Simple MCP Agent
 Please refer to https://github.com/Snowflake-Labs/agent-world-model for more details.
 """
+
 import asyncio
 import contextlib
 import io
@@ -30,7 +31,11 @@ from awm.tools import (
     resolve_llm_config,
     find_scenario_entry,
 )
-from awm.core.server import Config as ServerConfig, _prepare_database, start_server_process
+from awm.core.server import (
+    Config as ServerConfig,
+    _prepare_database,
+    start_server_process,
+)
 
 
 for _name in ["mcp_agent", "mcp", "httpx", "httpcore", "anyio"]:
@@ -82,7 +87,9 @@ class Config:
     def pre_process(self):
         if self.task is None:
             print(self)
-            assert self.scenario is not None and self.task_id is not None, "task is None, you must specify the scenario and task_id to lookup the task"
+            assert self.scenario is not None and self.task_id is not None, (
+                "task is None, you must specify the scenario and task_id to lookup the task"
+            )
 
 
 def get_system_prompt() -> str:
@@ -129,7 +136,7 @@ def get_system_prompt() -> str:
 
 def parse_tool_calls(content: str) -> list[dict]:
     tool_calls = []
-    pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+    pattern = r"<tool_call>\s*(.*?)\s*</tool_call>"
     matches = re.findall(pattern, content, re.DOTALL)
 
     for i, match in enumerate(matches):
@@ -158,11 +165,13 @@ def parse_tool_calls(content: str) -> list[dict]:
             }
             name = "call_tool"
 
-        tool_calls.append({
-            "id": f"call_{int(time.time() * 1000)}_{i}",
-            "name": name,
-            "arguments": arguments,
-        })
+        tool_calls.append(
+            {
+                "id": f"call_{int(time.time() * 1000)}_{i}",
+                "name": name,
+                "arguments": arguments,
+            }
+        )
 
     return tool_calls
 
@@ -177,7 +186,7 @@ def parse_call_tool_arguments(arguments: dict | str | None) -> tuple[str, dict]:
     inner_args = arguments.get("arguments", {})
 
     if tool_name.startswith("mcp_tool_"):
-        tool_name = tool_name[len("mcp_tool_"):]
+        tool_name = tool_name[len("mcp_tool_") :]
 
     if isinstance(inner_args, str):
         parsed = tools_robust_json_loads(inner_args) if inner_args.strip() else {}
@@ -194,24 +203,30 @@ def parse_call_tool_arguments(arguments: dict | str | None) -> tuple[str, dict]:
 
 def format_tools_for_response(tools: list[dict]) -> str:
 
-    def format_input_schema(schema: dict, indent_level: int = 6, parent_required: list | None = None) -> str:
+    def format_input_schema(
+        schema: dict, indent_level: int = 6, parent_required: list | None = None
+    ) -> str:
         if not schema:
             return ""
 
         result = ""
         indent_str = " " * indent_level
-        properties = schema.get('properties', {})
-        required_fields = parent_required if parent_required is not None else schema.get('required', [])
+        properties = schema.get("properties", {})
+        required_fields = (
+            parent_required
+            if parent_required is not None
+            else schema.get("required", [])
+        )
 
         for prop_name, prop_info in properties.items():
             is_required = prop_name in required_fields
             required_str = " (required)" if is_required else " (optional)"
-            prop_type = prop_info.get('type', 'unknown')
-            description = prop_info.get('description', '')
-            default = prop_info.get('default')
-            enum_values = prop_info.get('enum')
-            nested_properties = prop_info.get('properties', {})
-            nested_required = prop_info.get('required', [])
+            prop_type = prop_info.get("type", "unknown")
+            description = prop_info.get("description", "")
+            default = prop_info.get("default")
+            enum_values = prop_info.get("enum")
+            nested_properties = prop_info.get("properties", {})
+            nested_required = prop_info.get("required", [])
 
             result += f"{indent_str}- {prop_name}: {prop_type}{required_str}\n"
             if description:
@@ -223,13 +238,18 @@ def format_tools_for_response(tools: list[dict]) -> str:
 
             if prop_type == "object" and nested_properties:
                 result += f"{indent_str}  Properties:\n"
-                nested_schema = {"properties": nested_properties, "required": nested_required}
-                result += format_input_schema(nested_schema, indent_level + 4, nested_required)
+                nested_schema = {
+                    "properties": nested_properties,
+                    "required": nested_required,
+                }
+                result += format_input_schema(
+                    nested_schema, indent_level + 4, nested_required
+                )
 
         return result
 
     # filter out list_tools meta-tool
-    actual_tools = [t for t in tools if t.get('name') != 'list_tools']
+    actual_tools = [t for t in tools if t.get("name") != "list_tools"]
 
     docs_text = f"Available MCP Tools ({len(actual_tools)} tools):\n"
     docs_text += "=" * 80 + "\n\n"
@@ -243,18 +263,22 @@ def format_tools_for_response(tools: list[dict]) -> str:
         mcp_name = f"mcp_tool_{name}" if not name.startswith("mcp_tool_") else name
 
         # parse description for multi-line
-        desc_lines = description.split('\n')
+        desc_lines = description.split("\n")
         first_line = desc_lines[0].strip() if desc_lines else "No description"
-        more_desc = '\n'.join(line.strip() for line in desc_lines[1:]).strip() if len(desc_lines) > 1 else ""
+        more_desc = (
+            "\n".join(line.strip() for line in desc_lines[1:]).strip()
+            if len(desc_lines) > 1
+            else ""
+        )
 
         docs_text += f"{i}. {mcp_name}\n"
         docs_text += f"   Description: {first_line}\n"
         if more_desc:
-            for line in more_desc.split('\n'):
+            for line in more_desc.split("\n"):
                 if line.strip():
                     docs_text += f"   {line}\n"
 
-        if input_schema and input_schema.get('properties'):
+        if input_schema and input_schema.get("properties"):
             docs_text += f"   Parameters:\n"
             docs_text += format_input_schema(input_schema)
         else:
@@ -269,7 +293,6 @@ MCP_SERVER_NAME = "mcp_server"
 
 
 class MCPToolExecutor:
-
     def __init__(self, mcp_url: str, timeout: float = 60.0):
         self.mcp_url = mcp_url
         self.timeout = timeout
@@ -287,7 +310,7 @@ class MCPToolExecutor:
                 mcp=MCPSettings(
                     servers={
                         MCP_SERVER_NAME: MCPServerSettings(
-                            transport='streamable_http',
+                            transport="streamable_http",
                             url=self.mcp_url,
                         ),
                     }
@@ -324,7 +347,7 @@ class MCPToolExecutor:
                     # Extract text from result content
                     parts = []
                     for c in result.content:
-                        if hasattr(c, 'text'):
+                        if hasattr(c, "text"):
                             parts.append(c.text)
                         else:
                             parts.append(str(c))
@@ -354,15 +377,19 @@ async def generate_response(
             api_messages.append({"role": "assistant", "content": content})
         elif role == "tool":
             if use_vllm_extras:
-                api_messages.append({
-                    "role": "tool",
-                    "tool_call_id": msg.get("tool_call_id", "call_unknown"),
-                    "content": content,
-                })
+                api_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": msg.get("tool_call_id", "call_unknown"),
+                        "content": content,
+                    }
+                )
             else:
                 # For standard OpenAI API, tool role requires tool_calls in the assistant message.
                 # Since we use XML-based tool calls, send tool responses as user messages.
-                api_messages.append({"role": "user", "content": f"Tool response:\n{content}"})
+                api_messages.append(
+                    {"role": "user", "content": f"Tool response:\n{content}"}
+                )
 
     kwargs = dict(
         model=model_name,
@@ -386,7 +413,6 @@ async def generate_response(
     return content, tool_calls
 
 
-
 async def run_agent(config: Config):
     # Resolve scenario/task
     scenario = config.scenario
@@ -394,7 +420,7 @@ async def run_agent(config: Config):
 
     if config.task:
         task = config.task
-    
+
     elif config.scenario and config.task_id is not None:
         tasks_data = tools_jsonl_load(config.tasks_path)
         entry = find_scenario_entry(tasks_data, scenario)
@@ -402,19 +428,28 @@ async def run_agent(config: Config):
             raise ValueError(f"Scenario '{scenario}' not found in {config.tasks_path}")
         tasks = entry["tasks"]
         if task_id < 0 or task_id >= len(tasks):
-            raise ValueError(f"task_id {task_id} out of range (0-{len(tasks)-1}) for scenario {scenario}")
+            raise ValueError(
+                f"task_id {task_id} out of range (0-{len(tasks) - 1}) for scenario {scenario}"
+            )
         task = tasks[task_id]
-        logger.info(f"Resolved task from scenario={scenario}, task_id={task_id}: {task}")
+        logger.info(
+            f"Resolved task from scenario={scenario}, task_id={task_id}: {task}"
+        )
 
     else:
-        raise ValueError("Either --task or --scenario (with optional --task_id) must be provided")
+        raise ValueError(
+            "Either --task or --scenario (with optional --task_id) must be provided"
+        )
 
     # Resolve LLM config
     api_url, api_key, model = resolve_llm_config(
         api_url_override=config.api_url,
         model_override=config.model,
     )
-    use_vllm_extras = "localhost" in api_url and "openai.azure.com" not in api_url and "v1" in api_url
+    provider = os.environ.get("AWM_SYN_LLM_PROVIDER", "vllm").lower()
+    use_vllm_extras = provider == "vllm" or (
+        "localhost" in api_url and "openai.azure.com" not in api_url and "v1" in api_url
+    )
     # Prepare output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if config.output_dir:
@@ -442,14 +477,20 @@ async def run_agent(config: Config):
 
         # Start MCP server
         port = get_random_available_port()
-        server_proc = start_server_process(scenario, config.envs_path, db_file_path, port, output_dir=output_dir)
+        server_proc = start_server_process(
+            scenario, config.envs_path, db_file_path, port, output_dir=output_dir
+        )
         mcp_url = f"http://127.0.0.1:{port}/mcp"
 
         logger.info(f"Waiting for MCP server on port {port}...")
         if not await async_wait_for_server(port, timeout=60):
             if server_proc.poll() is not None:
-                stderr = server_proc.stderr.read().decode() if server_proc.stderr else ""
-                logger.error(f"MCP server process exited with code {server_proc.returncode}. stderr: {stderr[:1000]}")
+                stderr = (
+                    server_proc.stderr.read().decode() if server_proc.stderr else ""
+                )
+                logger.error(
+                    f"MCP server process exited with code {server_proc.returncode}. stderr: {stderr[:1000]}"
+                )
             raise RuntimeError(f"MCP server failed to start on port {port}")
         logger.info(f"MCP server ready at {mcp_url}")
     else:
@@ -492,7 +533,11 @@ async def run_agent(config: Config):
             logger.info(f"\n--- Iteration {iteration}/{config.max_iterations} ---")
 
             content, tool_calls = await generate_response(
-                llm_client, model, messages, config, use_vllm_extras=use_vllm_extras,
+                llm_client,
+                model,
+                messages,
+                config,
+                use_vllm_extras=use_vllm_extras,
             )
 
             if config.verbose:
@@ -508,13 +553,15 @@ async def run_agent(config: Config):
                 logger.info(f"\n{'=' * 40} Final Answer {'=' * 40}")
                 logger.info(content)
                 logger.info("=" * 80)
-                trajectory.append({
-                    "iteration": iteration,
-                    "role": "assistant",
-                    "content": content,
-                    "tool_calls": [],
-                    "is_final": True,
-                })
+                trajectory.append(
+                    {
+                        "iteration": iteration,
+                        "role": "assistant",
+                        "content": content,
+                        "tool_calls": [],
+                        "is_final": True,
+                    }
+                )
                 break
 
             # process first tool call only (one per turn)
@@ -525,7 +572,9 @@ async def run_agent(config: Config):
 
             if len(tool_calls) > 1:
                 skipped = [t["name"] for t in tool_calls[1:]]
-                logger.warning(f"Multiple tool calls detected. Only executing first: {name}. Skipped: {skipped}")
+                logger.warning(
+                    f"Multiple tool calls detected. Only executing first: {name}. Skipped: {skipped}"
+                )
 
             # execute tool call
             if name == "list_tools":
@@ -534,7 +583,9 @@ async def run_agent(config: Config):
 
             elif name == "call_tool":
                 tool_name, tool_args = parse_call_tool_arguments(arguments)
-                logger.info(f"Executing: call_tool({tool_name}, {json.dumps(tool_args, ensure_ascii=False)[:200]})")
+                logger.info(
+                    f"Executing: call_tool({tool_name}, {json.dumps(tool_args, ensure_ascii=False)[:200]})"
+                )
                 try:
                     response_text = await mcp.call_tool(tool_name, tool_args)
                 except asyncio.TimeoutError:
@@ -547,26 +598,34 @@ async def run_agent(config: Config):
                 response_text = f"Error: Unknown tool '{name}'. Only 'list_tools' and 'call_tool' are available."
 
             if config.verbose:
-                preview = response_text[:500] + "..." if len(response_text) > 500 else response_text
+                preview = (
+                    response_text[:500] + "..."
+                    if len(response_text) > 500
+                    else response_text
+                )
                 logger.info(f"Tool response ({len(response_text)} chars): {preview}")
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": response_text,
-            })
-
-            # Record trajectory entry
-            trajectory.append({
-                "iteration": iteration,
-                "role": "assistant",
-                "content": content,
-                "tool_calls": [tc],
-                "tool_response": {
+            messages.append(
+                {
+                    "role": "tool",
                     "tool_call_id": tool_call_id,
                     "content": response_text,
-                },
-            })
+                }
+            )
+
+            # Record trajectory entry
+            trajectory.append(
+                {
+                    "iteration": iteration,
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": [tc],
+                    "tool_response": {
+                        "tool_call_id": tool_call_id,
+                        "content": response_text,
+                    },
+                }
+            )
         else:
             logger.warning("Max iterations reached without completion.")
 
@@ -618,5 +677,6 @@ def run(config: Config):
 
 if __name__ == "__main__":
     from simpleArgParser import parse_args
+
     config: Config = parse_args(Config)
     run(config)

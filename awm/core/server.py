@@ -10,14 +10,17 @@ from loguru import logger
 from awm.tools import tools_jsonl_load, normalize_scenario_name
 from awm.core.reset import reset_single_database
 
+
 @dataclass
 class Config:
     scenario: str
-    envs_load_path: str # specify a path to load generated_envs.jsonl
-    db_path: str | None = None # specify a path to load the database file, xxx.db
+    envs_load_path: str  # specify a path to load generated_envs.jsonl
+    db_path: str | None = None  # specify a path to load the database file, xxx.db
     host: str = "127.0.0.1"
     port: int = 8001
-    temp_server_path: str | None = None # specify a temp server path, the code will be written to this path
+    temp_server_path: str | None = (
+        None  # specify a temp server path, the code will be written to this path
+    )
     # Path to generated db schemas file (used when db_path is None to create DB from schema)
     db_schema_path: str = "./outputs/gen_db.jsonl"
     # Path to generated sample data file (used when db_path is None)
@@ -27,12 +30,14 @@ class Config:
 
     def pre_process(self):
         self.scenario = normalize_scenario_name(self.scenario)
-        assert os.path.exists(self.envs_load_path), f"Environment file {self.envs_load_path} not found"
+        assert os.path.exists(self.envs_load_path), (
+            f"Environment file {self.envs_load_path} not found"
+        )
 
 
 def format_raw_code_to_lines(raw_code: str, indent: int) -> list[str]:
     no_indent_code = textwrap.dedent(raw_code).strip()
-    indent_code = textwrap.indent(no_indent_code, ' ' * indent)
+    indent_code = textwrap.indent(no_indent_code, " " * indent)
     return indent_code.split("\n")
 
 
@@ -46,7 +51,9 @@ def _prepare_server_dir(config: Config) -> str:
         output_dir = config.output_dir
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = os.path.join("outputs", "servers", f"{timestamp}_{config.scenario}")
+        output_dir = os.path.join(
+            "outputs", "servers", f"{timestamp}_{config.scenario}"
+        )
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
 
@@ -99,16 +106,18 @@ def _generate_server_code(config: Config, db_path: str) -> str:
     env = envs[config.scenario]
 
     code = env["full_code"]
-    new_code = ['import warnings', 'warnings.filterwarnings("ignore", category=DeprecationWarning)']
+    new_code = [
+        "import warnings",
+        'warnings.filterwarnings("ignore", category=DeprecationWarning)',
+    ]
     for line in code.split("\n"):
-
-        if 'create_engine(' in line:
-            left = line.split('create_engine(')[0]
+        if "create_engine(" in line:
+            left = line.split("create_engine(")[0]
             sql_path = f"'sqlite:///{db_path}'"
             right = f"create_engine({sql_path}, connect_args={{'check_same_thread': False}})"
             line = f"{left}{right}"
 
-        if 'uvicorn.run(app' in line:
+        if "uvicorn.run(app" in line:
             raw_code = f"""
             import os
             host = os.environ.get('HOST', '{config.host}')
@@ -124,7 +133,7 @@ def _generate_server_code(config: Config, db_path: str) -> str:
             """
             lines += format_raw_code_to_lines(raw_code, indent=4)
 
-            line = '    uvicorn.run(app, host=host, port=int(port))'
+            line = "    uvicorn.run(app, host=host, port=int(port))"
             new_code.extend(lines)
 
         new_code.append(line)
@@ -137,7 +146,7 @@ def _generate_server_code(config: Config, db_path: str) -> str:
             f"temp_server_{config.scenario.lower()}.py",
         )
 
-    with open(config.temp_server_path, "w") as f:
+    with open(config.temp_server_path, "w", encoding="utf-8") as f:
         f.write(server_code)
 
     return config.temp_server_path
@@ -154,8 +163,8 @@ def run_server(config: Config):
     logger.info(f"Server artifacts saved to {output_dir}")
     logger.info(f"Starting server for {config.scenario} on {config.host}:{config.port}")
 
-    os.environ['PORT'] = str(config.port)
-    os.environ['DATABASE_PATH'] = f"sqlite:///{db_path}"
+    os.environ["PORT"] = str(config.port)
+    os.environ["DATABASE_PATH"] = f"sqlite:///{db_path}"
 
     # Run server and capture log
     log_path = os.path.join(output_dir, "server.log")
@@ -183,11 +192,17 @@ def start_server_process(
     Returns the Popen handle so the caller can manage the process lifecycle.
     """
     cmd = [
-        sys.executable, "-m", "awm.core.server",
-        "--scenario", scenario,
-        "--envs_load_path", envs_load_path,
-        "--db_path", db_path,
-        "--port", str(port),
+        sys.executable,
+        "-m",
+        "awm.core.server",
+        "--scenario",
+        scenario,
+        "--envs_load_path",
+        envs_load_path,
+        "--db_path",
+        db_path,
+        "--port",
+        str(port),
     ]
     if output_dir:
         cmd.extend(["--output_dir", output_dir])
@@ -201,5 +216,6 @@ def run(config: Config):
 
 if __name__ == "__main__":
     from simpleArgParser import parse_args
+
     config: Config = parse_args(Config)
     run(config)

@@ -1,0 +1,7 @@
+/scripts/
+/serve/
+/outputs/servers/
+/outputs/debug_openai_gpt-oss-120b_ja/
+/outputs/seed_python_stdlib.jsonl
+/outputs/Qwen_Qwen3.8-Flash-Next-FP8_ja/
+/notebooks/

@@ -8,7 +8,11 @@ from awm.core.db import Config as DbConfig, run as run_db
 from awm.core.sample import Config as SampleConfig, run as run_sample
 from awm.core.spec import Config as SpecConfig, run as run_spec
 from awm.core.env import Config as EnvConfig, run as run_env
-from awm.core.verifier import Config as VerifierConfig, VerificationMode, run as run_verifier
+from awm.core.verifier import (
+    Config as VerifierConfig,
+    VerificationMode,
+    run as run_verifier,
+)
 
 
 @dataclass
@@ -25,15 +29,19 @@ class Config:
     model: str = "your-llm-model-name"
     # verification mode: sql or code
     verifier_mode: VerificationMode = VerificationMode.sql
+    # continue scenario generation from an existing gen_scenario.jsonl in output_dir
+    resume: bool = False
 
     def pre_process(self):
         assert os.path.exists(self.input), f"Seed scenario file {self.input} not found"
         os.makedirs(self.output_dir, exist_ok=True)
 
-        if os.environ.get('AWM_SYN_OVERRIDE_MODEL'):
-            self.model = os.environ.get('AWM_SYN_OVERRIDE_MODEL')
-        
-        assert self.model != "your-llm-model-name", "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
+        if os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
+            self.model = os.environ.get("AWM_SYN_OVERRIDE_MODEL")
+
+        assert self.model != "your-llm-model-name", (
+            "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
+        )
 
 
 def run(config: Config):
@@ -57,6 +65,7 @@ def run(config: Config):
         output_path=scenario_output,
         target_count=config.target_count,
         model=config.model,
+        resume=config.resume,
     )
     scenario_config.pre_process()
     run_scenario(scenario_config)

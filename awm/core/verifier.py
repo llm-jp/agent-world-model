@@ -8,7 +8,13 @@ from loguru import logger
 from tqdm import tqdm
 
 from awm.gpt import GPTClient
-from awm.tools import tools_robust_json_loads, normalize_scenario_name, tools_jsonl_save, tools_jsonl_load, dump_sqlite_to_string
+from awm.tools import (
+    tools_robust_json_loads,
+    normalize_scenario_name,
+    tools_jsonl_save,
+    tools_jsonl_load,
+    dump_sqlite_to_string,
+)
 from awm.prompts import (
     VERIFIER_SQL_GENERATION_SYSTEM_PROMPT,
     VERIFIER_SQL_GENERATION_USER_PROMPT,
@@ -19,34 +25,46 @@ from awm.prompts import (
 
 class VerificationMode(Enum):
     sql = "sql"  # code-augmented verification (returns info dict for LLM judgment)
-    code = "code" # purely code-based verification (returns complete/others)
+    code = "code"  # purely code-based verification (returns complete/others)
 
 
 @dataclass
 class Config:
     input_task: str
     output: str
-    database_dir: str = './outputs/databases'
+    database_dir: str = "./outputs/databases"
     mode: VerificationMode = VerificationMode.sql
     model: str = "your-llm-model-name"
-    limit: int | None = None # limit the number of tasks to process
-    allowed_scenarios: list[str] | None = None  # Comma-separated list of allowed scenarios
+    limit: int | None = None  # limit the number of tasks to process
+    allowed_scenarios: list[str] | None = (
+        None  # Comma-separated list of allowed scenarios
+    )
     max_retry: int = 4
     batch_size: int = 128
     max_concurrency: int = 32
 
     def pre_process(self):
-        assert os.path.exists(self.input_task), f"Input task file {self.input_task} does not exist"
-        assert os.path.exists(self.database_dir), f"Databases folder {self.database_dir} does not exist"
-        assert self.output is not None and self.output.endswith('.jsonl'), "Output path .jsonl is required"
+        assert os.path.exists(self.input_task), (
+            f"Input task file {self.input_task} does not exist"
+        )
+        assert os.path.exists(self.database_dir), (
+            f"Databases folder {self.database_dir} does not exist"
+        )
+        assert self.output is not None and self.output.endswith(".jsonl"), (
+            "Output path .jsonl is required"
+        )
 
         if self.allowed_scenarios:
-            self.allowed_scenarios = {normalize_scenario_name(name) for name in self.allowed_scenarios}
-        
-        if os.environ.get('AWM_SYN_OVERRIDE_MODEL'):
-            self.model = os.environ.get('AWM_SYN_OVERRIDE_MODEL')
-        
-        assert self.model != "your-llm-model-name", "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
+            self.allowed_scenarios = {
+                normalize_scenario_name(name) for name in self.allowed_scenarios
+            }
+
+        if os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
+            self.model = os.environ.get("AWM_SYN_OVERRIDE_MODEL")
+
+        assert self.model != "your-llm-model-name", (
+            "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
+        )
 
 
 def _load_db_dump_worker(args: tuple) -> tuple[str, str, str | None]:
@@ -61,22 +79,28 @@ def _load_db_dump_worker(args: tuple) -> tuple[str, str, str | None]:
 def sql_generation_prompt(scenario: str, task: str, db_dump: str) -> list[dict]:
     return [
         {"role": "system", "content": VERIFIER_SQL_GENERATION_SYSTEM_PROMPT},
-        {"role": "user", "content": VERIFIER_SQL_GENERATION_USER_PROMPT.format(
-            scenario_name=scenario,
-            user_task=task,
-            db_dump=db_dump,
-        )},
+        {
+            "role": "user",
+            "content": VERIFIER_SQL_GENERATION_USER_PROMPT.format(
+                scenario_name=scenario,
+                user_task=task,
+                db_dump=db_dump,
+            ),
+        },
     ]
 
 
 def code_verification_prompt(scenario: str, task: str, db_dump: str) -> list[dict]:
     return [
         {"role": "system", "content": CODE_VERIFICATION_SYSTEM_PROMPT},
-        {"role": "user", "content": CODE_VERIFICATION_USER_PROMPT.format(
-            scenario=scenario,
-            task=task,
-            db_dump=db_dump,
-        )},
+        {
+            "role": "user",
+            "content": CODE_VERIFICATION_USER_PROMPT.format(
+                scenario=scenario,
+                task=task,
+                db_dump=db_dump,
+            ),
+        },
     ]
 
 
@@ -97,8 +121,8 @@ def execute_verification_code(
         os.chmod(initial_db_path, 0o444)
 
         namespace = {
-            'sqlite3': sqlite3,
-            'json': json,
+            "sqlite3": sqlite3,
+            "json": json,
         }
 
         exec(python_code, namespace)
@@ -111,7 +135,9 @@ def execute_verification_code(
             }
 
         if mode == VerificationMode.sql:
-            result = verify_func(initial_db_path=initial_db_path, final_db_path=final_db_path)
+            result = verify_func(
+                initial_db_path=initial_db_path, final_db_path=final_db_path
+            )
         else:
             result = verify_func(
                 initial_db_path=initial_db_path,
@@ -125,7 +151,11 @@ def execute_verification_code(
                     "execution_status": "error",
                     "error_message": f"Invalid return format. Expected dict with 'result' key, got: {type(result).__name__}",
                 }
-            if result["result"] and isinstance(result["result"], str) and result["result"].lower() not in {"complete", "others"}:
+            if (
+                result["result"]
+                and isinstance(result["result"], str)
+                and result["result"].lower() not in {"complete", "others"}
+            ):
                 return {
                     "execution_status": "error",
                     "error_message": f"Invalid result value. Expected 'complete' or 'others', got: {result.get('result')}",
@@ -134,7 +164,10 @@ def execute_verification_code(
         return {"execution_status": "success", "result": result}
 
     except Exception as e:
-        return {"execution_status": "error", "error_message": f"Execution error: {str(e)}"}
+        return {
+            "execution_status": "error",
+            "error_message": f"Execution error: {str(e)}",
+        }
     finally:
         try:
             os.chmod(initial_db_path, original_mode)
@@ -150,10 +183,15 @@ def load_existing_results(output_path: str) -> dict[str, dict]:
     existing_map: dict[str, dict] = {}
     data = tools_jsonl_load(output_path)
     for item in data:
-        scenario = normalize_scenario_name(item['scenario'])
-        task = item['task']
-        verification = verification = item.get('verification', {})
-        if verification and verification.get('code') and isinstance(verification['code'], str) and len(verification['code']) > 10:
+        scenario = normalize_scenario_name(item["scenario"])
+        task = item["task"]
+        verification = verification = item.get("verification", {})
+        if (
+            verification
+            and verification.get("code")
+            and isinstance(verification["code"], str)
+            and len(verification["code"]) > 10
+        ):
             existing_map[f"{scenario}::{task}"] = item
 
     return existing_map
@@ -190,9 +228,16 @@ class VerificationCodeGenerator:
 
         # error history if retrying
         if error_history:
-            error_context = "\n\n".join([f"Previous Error #{i+1}:\n{err}" for i, err in enumerate(error_history)])
+            error_context = "\n\n".join(
+                [
+                    f"Previous Error #{i + 1}:\n{err}"
+                    for i, err in enumerate(error_history)
+                ]
+            )
             messages = [m.copy() for m in messages]
-            messages[-1]["content"] += f"\n\n## CRITICAL: Avoid these errors from previous attempts:\n{error_context}"
+            messages[-1]["content"] += (
+                f"\n\n## CRITICAL: Avoid these errors from previous attempts:\n{error_context}"
+            )
 
         return {
             "messages": messages,
@@ -201,7 +246,9 @@ class VerificationCodeGenerator:
             "max_tokens": 32000,
         }
 
-    def _build_error_summary_request(self, error_message: str, python_code: str) -> dict:
+    def _build_error_summary_request(
+        self, error_message: str, python_code: str
+    ) -> dict:
         """Build a request for error summarization."""
         system_prompt = "You are a Python debugging expert. Analyze the error and provide a concise summary with fix guidance. Keep response under 500 tokens."
         user_prompt = f"""Error Message:
@@ -226,7 +273,9 @@ Provide:
             "max_tokens": 1024,
         }
 
-    def _finalize_task(self, scenario: str, task: str, task_idx: int, state: dict) -> None:
+    def _finalize_task(
+        self, scenario: str, task: str, task_idx: int, state: dict
+    ) -> None:
         generation_result = state["generation_result"]
 
         result = {
@@ -234,13 +283,17 @@ Provide:
             "task_idx": task_idx,
             "task": task,
             "verification": {
-                "code": generation_result.get("python_code") if generation_result else None,
+                "code": generation_result.get("python_code")
+                if generation_result
+                else None,
                 "raw_response": state["raw_response"],
             },
         }
         self.pending_results.append(result)
 
-    def process_tasks(self, task_items: list[dict], existing_results: dict[str, dict]) -> None:
+    def process_tasks(
+        self, task_items: list[dict], existing_results: dict[str, dict]
+    ) -> None:
         # collect unique scenarios for DB dump loading
         scenarios = set()
         for item in task_items:
@@ -252,15 +305,30 @@ Provide:
 
         num_workers = min(os.cpu_count() or 4, len(worker_args), 16)
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            futures = {executor.submit(_load_db_dump_worker, arg): arg[0] for arg in worker_args}
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Loading DB dumps"):
+            futures = {
+                executor.submit(_load_db_dump_worker, arg): arg[0]
+                for arg in worker_args
+            }
+            for future in tqdm(
+                as_completed(futures), total=len(futures), desc="Loading DB dumps"
+            ):
                 scenario, db_path, db_dump, error = future.result()
-                db_info[scenario] = {"db_path": db_path, "db_dump": db_dump, "error": error}
+                db_info[scenario] = {
+                    "db_path": db_path,
+                    "db_dump": db_dump,
+                    "error": error,
+                }
 
         # validate existing results by actually executing the code
-        default_func_name = "verify_task_completion" if self.args.mode == VerificationMode.code else "verify_task"
+        default_func_name = (
+            "verify_task_completion"
+            if self.args.mode == VerificationMode.code
+            else "verify_task"
+        )
         validated_keys: set[str] = set()
-        to_validate: list[tuple[str, str, str, str]] = []  # (resume_key, code, db_path, func_name)
+        to_validate: list[
+            tuple[str, str, str, str]
+        ] = []  # (resume_key, code, db_path, func_name)
         seen_keys: set[str] = set()
         for item in task_items:
             scenario = normalize_scenario_name(item["scenario"])
@@ -269,21 +337,29 @@ Provide:
                 if resume_key in existing_results and resume_key not in seen_keys:
                     seen_keys.add(resume_key)
                     existing = existing_results[resume_key]
-                    code = existing.get('verification', {}).get('code', '')
+                    code = existing.get("verification", {}).get("code", "")
                     info = db_info.get(scenario)
                     if code and info and info.get("db_path"):
                         # try to extract function name from existing code
                         func_name = default_func_name
-                        for line in code.split('\n'):
+                        for line in code.split("\n"):
                             line = line.strip()
-                            if line.startswith('def verify_') and '(' in line:
-                                func_name = line.split('(')[0].replace('def ', '').strip()
+                            if line.startswith("def verify_") and "(" in line:
+                                func_name = (
+                                    line.split("(")[0].replace("def ", "").strip()
+                                )
                                 break
-                        to_validate.append((resume_key, code, info["db_path"], func_name))
+                        to_validate.append(
+                            (resume_key, code, info["db_path"], func_name)
+                        )
 
         if to_validate:
-            logger.info(f"Validating {len(to_validate)} existing results by executing code...")
-            for resume_key, code, db_path, func_name in tqdm(to_validate, desc="Validating existing results"):
+            logger.info(
+                f"Validating {len(to_validate)} existing results by executing code..."
+            )
+            for resume_key, code, db_path, func_name in tqdm(
+                to_validate, desc="Validating existing results"
+            ):
                 exec_result = execute_verification_code(
                     python_code=code,
                     function_name=func_name,
@@ -331,7 +407,9 @@ Provide:
         pending_keys = list(task_states.keys())
         batch_size = self.args.batch_size
 
-        logger.info(f"processing loop: {len(pending_keys)} tasks, batch_size={batch_size}, max_attempts={max_attempts}")
+        logger.info(
+            f"processing loop: {len(pending_keys)} tasks, batch_size={batch_size}, max_attempts={max_attempts}"
+        )
 
         while pending_keys:
             batch_keys = pending_keys[:batch_size]
@@ -353,15 +431,21 @@ Provide:
                 for key in need_error_summary:
                     state = task_states[key]
                     error_summary_requests.append(
-                        self._build_error_summary_request(state["pending_error_msg"], state["last_code"])
+                        self._build_error_summary_request(
+                            state["pending_error_msg"], state["last_code"]
+                        )
                     )
 
                 logger.info(f"Summarizing {len(error_summary_requests)} errors...")
-                error_summaries = self.gpt_client.batch_chat_completion(error_summary_requests, progress_bar=True)
+                error_summaries = self.gpt_client.batch_chat_completion(
+                    error_summary_requests, progress_bar=True
+                )
 
                 for key, summary in zip(need_error_summary, error_summaries):
                     state = task_states[key]
-                    state["error_history"].append(summary if summary else "Error summarization failed")
+                    state["error_history"].append(
+                        summary if summary else "Error summarization failed"
+                    )
                     state["needs_error_summary"] = False
                     state["pending_error_msg"] = None
                     ready_for_generation.append(key)
@@ -381,14 +465,22 @@ Provide:
                     scenario=scenario,
                     task=task,
                     db_dump=info["db_dump"],
-                    error_history=state["error_history"] if state["error_history"] else None,
+                    error_history=state["error_history"]
+                    if state["error_history"]
+                    else None,
                 )
                 generation_requests.append(request)
                 request_keys.append(key)
 
-            attempt_info = {key: task_states[key]["attempt_count"] + 1 for key in request_keys}
-            logger.info(f"generating verification code for {len(generation_requests)} tasks (attempts: {list(attempt_info.values())})")
-            responses = self.gpt_client.batch_chat_completion(generation_requests, progress_bar=True)
+            attempt_info = {
+                key: task_states[key]["attempt_count"] + 1 for key in request_keys
+            }
+            logger.info(
+                f"generating verification code for {len(generation_requests)} tasks (attempts: {list(attempt_info.values())})"
+            )
+            responses = self.gpt_client.batch_chat_completion(
+                generation_requests, progress_bar=True
+            )
 
             # process responses and test code execution
             for key, response in zip(request_keys, responses):
@@ -404,7 +496,9 @@ Provide:
                 try:
                     result = tools_robust_json_loads(response) if response else {}
                     if not result or "python_code" not in result:
-                        state["error_history"].append("Generation failed: Invalid response format")
+                        state["error_history"].append(
+                            "Generation failed: Invalid response format"
+                        )
                         if current_attempt < max_attempts:
                             pending_keys.append(key)
                         else:
@@ -424,7 +518,11 @@ Provide:
 
                 # test the generated code
                 python_code = result.get("python_code", "")
-                default_func_name = "verify_task_completion" if self.args.mode == VerificationMode.code else "verify_task"
+                default_func_name = (
+                    "verify_task_completion"
+                    if self.args.mode == VerificationMode.code
+                    else "verify_task"
+                )
                 function_name = result.get("function_name", default_func_name)
 
                 exec_result = execute_verification_code(
@@ -436,12 +534,18 @@ Provide:
 
                 if exec_result.get("execution_status") == "success":
                     state["success"] = True
-                    logger.debug(f"[{scenario}] Verification code test passed (attempt {current_attempt})")
+                    logger.debug(
+                        f"[{scenario}] Verification code test passed (attempt {current_attempt})"
+                    )
                     for task_idx in task_map[key]:
                         self._finalize_task(scenario, task, task_idx, state)
                 else:
-                    error_msg = exec_result.get("error_message", "Unknown execution error")
-                    logger.debug(f"[{scenario}] Execution error (attempt {current_attempt}): {error_msg}")
+                    error_msg = exec_result.get(
+                        "error_message", "Unknown execution error"
+                    )
+                    logger.debug(
+                        f"[{scenario}] Execution error (attempt {current_attempt}): {error_msg}"
+                    )
 
                     if current_attempt < max_attempts:
                         state["needs_error_summary"] = True
@@ -456,7 +560,9 @@ Provide:
             self._save_pending_results()
 
             completed = len(task_states) - len(pending_keys)
-            logger.info(f"Progress: {completed}/{len(task_states)} tasks completed, {len(pending_keys)} pending")
+            logger.info(
+                f"Progress: {completed}/{len(task_states)} tasks completed, {len(pending_keys)} pending"
+            )
 
 
 def run(config: Config):
@@ -466,28 +572,37 @@ def run(config: Config):
     task_items = tools_jsonl_load(config.input_task)
 
     if config.allowed_scenarios:
-        task_items = [item for item in task_items if normalize_scenario_name(item["scenario"]) in config.allowed_scenarios]
+        task_items = [
+            item
+            for item in task_items
+            if normalize_scenario_name(item["scenario"]) in config.allowed_scenarios
+        ]
 
     if config.limit:
         tasks_per_scenario = config.limit // len(task_items)
         tasks_per_scenario = max(tasks_per_scenario, 1)
         temp = []
         for item in task_items:
-            item['tasks'] = item['tasks'][:tasks_per_scenario]
+            item["tasks"] = item["tasks"][:tasks_per_scenario]
             temp.append(item)
-            if sum(len(item['tasks']) for item in temp) >= config.limit:
+            if sum(len(item["tasks"]) for item in temp) >= config.limit:
                 break
         task_items = temp
 
     total_tasks = sum(len(item["tasks"]) for item in task_items)
-    already_done = [f"{normalize_scenario_name(task_item['scenario'])}::{task}" in existing_results for task_item in task_items for task in task_item['tasks']]
+    already_done = [
+        f"{normalize_scenario_name(task_item['scenario'])}::{task}" in existing_results
+        for task_item in task_items
+        for task in task_item["tasks"]
+    ]
     already_done = sum(already_done)
 
-    logger.info(f"Total tasks: {total_tasks}, Already done: {already_done}, Full existing results: {len(existing_results)}")
+    logger.info(
+        f"Total tasks: {total_tasks}, Already done: {already_done}, Full existing results: {len(existing_results)}"
+    )
 
     if total_tasks != 0:
         generator = VerificationCodeGenerator(config)
         generator.process_tasks(task_items, existing_results)
 
     logger.info(f"Done verification generation!config={config}")
-

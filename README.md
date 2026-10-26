@@ -66,6 +66,18 @@ Then you can skip to [Environment Management](#environment-management) and [Agen
 Run `uv sync` to setup the python environment. And set your LLM API credentials:
 
 ```bash
+# vLLM (default provider)
+export AWM_SYN_LLM_PROVIDER="vllm"
+export VLLM_BASE_URL="http://localhost:8000/v1"
+# optional, only if the server is launched with `vllm serve --api-key`
+export VLLM_API_KEY="your-api-key"
+# optional, cap max tokens per request. With vllm it replaces the per-stage limits for every request; if unset, the remaining context length is used
+export AWM_SYN_MAX_TOKENS="32768"
+# optional, set false to disable the thinking mode of reasoning models (e.g., Qwen3) via chat_template_kwargs
+export AWM_SYN_ENABLE_THINKING="false"
+# optional, language of the synthesis prompts: en (default) or ja. ja (awm/prompts_ja.py) covers the scenario, task and sample data prompts; schema, API, server and verifier generation stay in English
+export AWM_SYN_LANG="ja"
+
 # OpenAI or any other compatible services
 export AWM_SYN_LLM_PROVIDER="openai"
 export OPENAI_API_KEY="your-api-key"
@@ -79,6 +91,18 @@ export AZURE_OPENAI_API_KEY="your-api-key"
 
 # configure the model/LLM for synthesis
 export AWM_SYN_OVERRIDE_MODEL="your-model-name such as gpt-5"
+```
+
+### vLLM and Slurm
+vLLM conflicts with the pinned `fastapi` / `numpy` of the pipeline, so it lives in a separate uv project under `serve/` (Linux x86_64 only).
+
+```bash
+mkdir -p logs
+# build both environments: `uv sync` and `uv sync --project serve`
+sbatch scripts/install.sh
+# start the generation and embedding vLLM servers, then run `awm gen all`
+# options: -d (sample run) -r (resume) -m model -l ja|en -s seed_file, see `bash scripts/run_gen.sh -h`
+sbatch scripts/run_gen.sh -d
 ```
 
 ## 🔥 Synthesis
@@ -115,8 +139,14 @@ Use `awm <command> --help` to see options for any command, e.g. `awm gen task --
 ### Step 1: Scenario Generation
 We start with a seed set of scenarios and generate 1,000 unique scenario descriptions. Note that only the names are used as seeds; the descriptions are included in the seed file for ease of use.
 
+The embedding model [cl-nagoya/ruri-v3-70m](https://huggingface.co/cl-nagoya/ruri-v3-70m) is used for the diversity check and should be served by vLLM.
+
 ```bash
-export EMBEDDING_OPENAI_API_KEY="your-api-key for the embedding model"
+# serve the embedding model (mean pooling, read from its sentence-transformers config)
+uv run --project serve vllm serve cl-nagoya/ruri-v3-70m --runner pooling --convert embed --port 8002
+
+# optional, defaults to http://localhost:8002/v1
+export EMBEDDING_OPENAI_BASE_URL="http://localhost:8002/v1"
 
 awm gen scenario \
     --input_path outputs/seed_scenario.jsonl \

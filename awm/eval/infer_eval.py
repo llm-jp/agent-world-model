@@ -1,6 +1,6 @@
 """
 Inference + evaluation entry point for agent-world-model.
-This is a minimal bridge around `mcp-adapted-bench`: https://github.com/Raibows/mcp-adapted-bench 
+This is a minimal bridge around `mcp-adapted-bench`: https://github.com/Raibows/mcp-adapted-bench
 """
 
 import asyncio
@@ -41,11 +41,8 @@ from mcp_adapted_bench.tau2.runner import run_tau2_evaluation
 from mcp_adapted_bench.mcp_universe.runner import run_mcp_universe_evaluation
 
 
-
 logger.remove()
 logger.add(sys.stdout, level="INFO")
-
-
 
 
 def _read_completed_task_ids(output_dir: Path) -> set[str]:
@@ -125,7 +122,6 @@ def _save_config(config: InferEvalConfig) -> None:
     tools_json_save(snap, (out / "config.json").as_posix())
 
 
-
 async def _run_async(config: InferEvalConfig) -> dict:
     # Build the LLM client (fails fast if env is misconfigured).
     client, model, api_url = build_openai_client(
@@ -166,6 +162,7 @@ async def _run_async(config: InferEvalConfig) -> dict:
 
     raise ValueError(f"Unknown eval mode: {config.mode}")
 
+
 def run(config: InferEvalConfig):
     summary = asyncio.run(_run_async(config))
 
@@ -176,8 +173,8 @@ def run(config: InferEvalConfig):
     logger.info(f"Wrote summary to {od / 'summary.json'}")
 
 
-
 if __name__ == "__main__":
     from simpleArgParser import parse_args
+
     config: InferEvalConfig = parse_args(InferEvalConfig)
     run(config)

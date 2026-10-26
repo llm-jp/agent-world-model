@@ -1,3 +1,5 @@
+import os
+
 TASK_GENERATION_SYSTEM_PROMPT = """You are an expert in web automation and user task analysis. Your job is to generate realistic, diverse user tasks for scenarios."""
 
 TASK_GENERATION_USER_PROMPT = """Generate {num_tasks} realistic and diverse user tasks for the following scenario.
@@ -147,6 +149,12 @@ Output format:
         }}
     ]
 }}"""
+
+API_GENERATION_JA_PARAM_REQUIREMENTS = """
+- String parameters may receive Japanese values (names, addresses, search keywords, free text). Do NOT restrict them to ASCII (e.g., via pattern or enum); accept Japanese values as-is
+- Parameters that search or filter by name or keyword MUST support partial matching with Japanese values
+- Do NOT use path parameters for values that may contain Japanese; accept them as query or body parameters. Use IDs as path parameters to identify resources
+- For parameters whose stored data may be Japanese, use Japanese values in the example"""
 
 DATABASE_GENERATION_SYSTEM_PROMPT = """You are an expert database architect specializing in SQLite schema design. Your job is to create complete database schemas that can fully support the given user intentions."""
 
@@ -303,7 +311,6 @@ Reminder:
 - Ensure all endpoints run without undefined names, missing imports, or missing models
 - Ensure the code creates the SQLite database specified by the environment variable DATABASE_PATH on first run and successfully serves all endpoints with the specified response models
 """
-
 
 
 SAMPLE_DATA_GENERATION_SYSTEM_PROMPT = """You are an expert database engineer and data generator specializing in creating comprehensive test datasets for AI agent task execution. Your job is to generate realistic, diverse sample data that ensures agents can successfully complete ALL given user tasks through API calls.
@@ -778,8 +785,6 @@ Output format (JSON, no markdown fences):
 }}"""
 
 
-
-
 VERIFIER_SQL_GENERATION_SYSTEM_PROMPT = """You are an expert Python and SQL developer. Your job is to generate Python code that uses SQLite queries to verify if a user task was completed successfully on a simplified API server. You only output UTF-8 encoded string, avoid any emoji or special characters. You only output English text."""
 
 VERIFIER_SQL_GENERATION_USER_PROMPT = """You need to generate a Python function with sqlite3 queries to collect useful information from the given databases to verify if a user task was completed. You are now provided with the environment name of the simplified API server, the user task to verify, the database schema, and the initial database state to help you generate the Python function.
@@ -959,3 +964,29 @@ def verify_task_completion(initial_db_path: str, final_db_path: str, final_answe
 ```
 
 Now generate the verification code for the given task."""
+
+
+# Japanese replaces only the prompts whose output is natural language seen in the
+# data (scenarios, tasks, sample data); schema, API, server and verifier
+# generation stay in English, with API generation told to accept Japanese arguments.
+if os.environ.get("AWM_SYN_LANG", "en") == "ja":
+    from awm.prompts_ja import (  # noqa: F401
+        SAMPLE_DATA_GENERATION_SYSTEM_PROMPT,
+        SAMPLE_DATA_GENERATION_USER_PROMPT,
+        SCENARIO_CATEGORY_DIVERSITY_PROMPT,
+        SCENARIO_CATEGORY_LIST,
+        SCENARIO_DIVERSITY_CHECK_SYSTEM_PROMPT,
+        SCENARIO_DIVERSITY_CHECK_USER_PROMPT_TEMPLATE,
+        SCENARIO_FOCUS_CATEGORIES,
+        SCENARIO_FOCUSED_GENERATION_USER_PROMPT_TEMPLATE,
+        SCENARIO_GENERATION_SYSTEM_PROMPT,
+        SCENARIO_GENERATION_USER_PROMPT_TEMPLATE,
+        TASK_GENERATION_SYSTEM_PROMPT,
+        TASK_GENERATION_USER_PROMPT,
+    )
+
+    _api_param_anchor = "- Provide realistic examples that demonstrate expected values"
+    assert API_GENERATION_USER_PROMPT.count(_api_param_anchor) == 1
+    API_GENERATION_USER_PROMPT = API_GENERATION_USER_PROMPT.replace(
+        _api_param_anchor, _api_param_anchor + API_GENERATION_JA_PARAM_REQUIREMENTS
+    )

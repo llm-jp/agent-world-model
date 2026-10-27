@@ -1,5 +1,7 @@
 import importlib
+import sys
 from enum import Enum
+
 from simpleArgParser import parse_args_with_commands
 
 
@@ -47,24 +49,24 @@ class EnvCmd(Enum):
 
 
 def _build_commands() -> dict:
-    from awm.core.scenario import Config as ScenarioConfig
-    from awm.core.task import Config as TaskConfig
-    from awm.core.db import Config as DbConfig
-    from awm.core.sample import Config as SampleConfig
-    from awm.core.spec import Config as SpecConfig
-    from awm.core.env import Config as EnvConfig
-    from awm.core.verifier import Config as VerifierConfig
-    from awm.core.pipeline import Config as PipelineConfig
-    from awm.core.server import Config as ServeConfig
-    from awm.core.check import Config as CheckServerConfig
-    from awm.core.test_env import Config as TestEnvConfig
-    from awm.core.reset import Config as ResetConfig
     from awm.core.agent import Config as AgentConfig
+    from awm.core.check import Config as CheckServerConfig
+    from awm.core.db import Config as DbConfig
+    from awm.core.env import Config as EnvConfig
+    from awm.core.pipeline import Config as PipelineConfig
+    from awm.core.reset import Config as ResetConfig
+    from awm.core.sample import Config as SampleConfig
+    from awm.core.scenario import Config as ScenarioConfig
+    from awm.core.server import Config as ServeConfig
+    from awm.core.spec import Config as SpecConfig
+    from awm.core.task import Config as TaskConfig
+    from awm.core.test_env import Config as TestEnvConfig
+    from awm.core.verifier import Config as VerifierConfig
     from awm.core.verify import Config as VerifyConfig
 
     try:
         from awm.eval.infer_eval import InferEvalConfig
-    except ImportError as e:
+    except ImportError:
         InferEvalConfig = None
 
     return {
@@ -120,7 +122,7 @@ def main():
     module_name = DISPATCH.get(command_path)
     if module_name is None:
         print(f"Error: unknown command path {command_path}")
-        exit(1)
+        sys.exit(1)
 
     module = importlib.import_module(module_name)
     module.run(config)

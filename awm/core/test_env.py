@@ -1,8 +1,10 @@
 import os
 from dataclasses import dataclass
+
 from loguru import logger
-from awm.tools import tools_jsonl_load, normalize_scenario_name
+
 from awm.core.env import batch_test_environments
+from awm.tools import normalize_scenario_name, tools_jsonl_load
 
 
 @dataclass
@@ -15,9 +17,9 @@ class Config:
     def pre_process(self):
         assert os.path.exists(self.input), f"Environment file {self.input} not found"
         if self.allowed_scenarios:
-            self.allowed_scenarios = {
-                normalize_scenario_name(name) for name in self.allowed_scenarios
-            }
+            self.allowed_scenarios = sorted(
+                {normalize_scenario_name(name) for name in self.allowed_scenarios}
+            )
 
 
 def run(config: Config):

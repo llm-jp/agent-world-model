@@ -1,10 +1,12 @@
 import os
+import random
+from dataclasses import dataclass
+
+from loguru import logger
+
 from awm.gpt import GPTClient
 from awm.prompts import TASK_GENERATION_SYSTEM_PROMPT, TASK_GENERATION_USER_PROMPT
-from awm.tools import tools_robust_json_loads, tools_jsonl_save, tools_jsonl_load
-from loguru import logger
-from dataclasses import dataclass
-import random
+from awm.tools import tools_jsonl_load, tools_jsonl_save, tools_robust_json_loads
 
 
 @dataclass
@@ -25,8 +27,8 @@ class Config:
             "input is required"
         )
 
-        if os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
-            self.model = os.environ.get("AWM_SYN_OVERRIDE_MODEL")
+        if override_model := os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
+            self.model = override_model
 
         assert self.model != "your-llm-model-name", (
             "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
@@ -110,7 +112,7 @@ def generate_all_tasks(args: Config, scenarios: list[dict]):
                             f"✓ {scenario['name']}: {len(task_list)} tasks generated"
                         )
 
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.error(f"Failed to parse tasks for {scenario['name']}: {e}")
                     logger.error(f"Response preview: {response[:200]}...")
                     need_retry = True
@@ -133,7 +135,7 @@ def generate_all_tasks(args: Config, scenarios: list[dict]):
 
 
 def run(config: Config):
-    logger.info(f"Generating tasks for all scenarios...")
+    logger.info("Generating tasks for all scenarios...")
 
     scenarios = tools_jsonl_load(config.input)
     if config.shuffle:

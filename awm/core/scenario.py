@@ -1,27 +1,27 @@
-import random
 import os
+import random
 from dataclasses import dataclass
 from typing import Any, Literal
-from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from awm.gpt import GPTClient
-from awm.tools import tools_jsonl_load, tools_jsonl_save, tools_robust_json_loads
-from openai import OpenAI
+
 import numpy as np
+from loguru import logger
+from openai import OpenAI
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from tqdm import tqdm
 
-
+from awm.gpt import GPTClient
 from awm.prompts import (
+    SCENARIO_CATEGORY_DIVERSITY_PROMPT,
     SCENARIO_CLASSIFICATION_SYSTEM_PROMPT,
     SCENARIO_CLASSIFICATION_USER_PROMPT_TEMPLATE,
-    SCENARIO_GENERATION_SYSTEM_PROMPT,
-    SCENARIO_GENERATION_USER_PROMPT_TEMPLATE,
-    SCENARIO_FOCUSED_GENERATION_USER_PROMPT_TEMPLATE,
-    SCENARIO_FOCUS_CATEGORIES,
     SCENARIO_DIVERSITY_CHECK_SYSTEM_PROMPT,
     SCENARIO_DIVERSITY_CHECK_USER_PROMPT_TEMPLATE,
-    SCENARIO_CATEGORY_DIVERSITY_PROMPT,
+    SCENARIO_FOCUS_CATEGORIES,
+    SCENARIO_FOCUSED_GENERATION_USER_PROMPT_TEMPLATE,
+    SCENARIO_GENERATION_SYSTEM_PROMPT,
+    SCENARIO_GENERATION_USER_PROMPT_TEMPLATE,
 )
+from awm.tools import tools_jsonl_load, tools_jsonl_save, tools_robust_json_loads
 
 
 class GeneratedScenario(BaseModel):
@@ -85,11 +85,12 @@ class Config:
 
     def pre_process(self):
         if self.resume:
-            if not os.path.exists(self.output_path):
-                if not os.path.exists(self.input_path):
-                    raise FileNotFoundError(
-                        f"Resume mode: neither output ({self.output_path}) nor input ({self.input_path}) file found"
-                    )
+            if not os.path.exists(self.output_path) and not os.path.exists(
+                self.input_path
+            ):
+                raise FileNotFoundError(
+                    f"Resume mode: neither output ({self.output_path}) nor input ({self.input_path}) file found"
+                )
         else:
             if not os.path.exists(self.input_path):
                 raise FileNotFoundError(f"Input file not found: {self.input_path}")
@@ -103,8 +104,8 @@ class Config:
                 "EMBEDDING_OPENAI_BASE_URL is not set, using default vLLM embedding server http://localhost:8002/v1"
             )
 
-        if os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
-            self.model = os.environ.get("AWM_SYN_OVERRIDE_MODEL")
+        if override_model := os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
+            self.model = override_model
 
         assert self.model != "your-llm-model-name", (
             "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
@@ -204,14 +205,14 @@ class ScenarioSelfInstruct:
                 scenario["suitability_reasoning"] = result.reasoning
                 scenario["simulatable_features"] = result.simulatable_features
                 scenario["non_simulatable_features"] = result.non_simulatable_features
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning(
                     f"Failed to parse classification for {scenario['name']}: {e}"
                 )
                 scenario["categories"] = []
                 scenario["suitability_score"] = 5
                 scenario["suitability_level"] = "medium"
-                scenario["suitability_reasoning"] = f"Classification error: {str(e)}"
+                scenario["suitability_reasoning"] = f"Classification error: {e!s}"
 
             classified.append(scenario)
 
@@ -451,7 +452,7 @@ class ScenarioSelfInstruct:
         ]
         stats["over_represented_categories"] = over_represented
 
-        logger.info(f"Global diversity stats:")
+        logger.info("Global diversity stats:")
         logger.info(f"  Mean similarity: {stats['mean_similarity']:.3f}")
         logger.info(f"  Max similarity: {stats['max_similarity']:.3f}")
         logger.info(
@@ -495,7 +496,7 @@ class ScenarioSelfInstruct:
         if categorized:
             per_category = max(1, num_examples // len(categorized))
 
-            for cat, scenarios in categorized.items():
+            for scenarios in categorized.values():
                 if scenarios and len(selected) < num_examples:
                     to_take = min(
                         per_category, len(scenarios), num_examples - len(selected)
@@ -576,7 +577,7 @@ class ScenarioSelfInstruct:
                     valid.append(scenario.model_dump())
 
             return valid
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to parse response: {e}")
             return []
 
@@ -702,7 +703,7 @@ class ScenarioSelfInstruct:
                 )
                 return kept
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Diversity check failed: {e}")
             return candidates
 
@@ -743,7 +744,7 @@ class ScenarioSelfInstruct:
                 logger.info(f"Category analysis: {result.get('underrepresented', [])}")
                 return result
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Category analysis failed: {e}")
 
         return {}
@@ -782,8 +783,6 @@ class ScenarioSelfInstruct:
             logger.success("Classification complete (--classify_only mode)")
             self._print_suitability_report()
             return
-
-        suitable_pool = self.high_suitability
 
         logger.info("\n" + "=" * 60)
         logger.info("Step 2: Initializing embedding-based diversity system...")
@@ -924,9 +923,9 @@ class ScenarioSelfInstruct:
 
         logger.success(f"\n{'=' * 60}")
         if current_count >= target:
-            logger.success(f"Self-instruct complete!")
+            logger.success("Self-instruct complete!")
         else:
-            logger.warning(f"Self-instruct stopped early (reached iteration limit)")
+            logger.warning("Self-instruct stopped early (reached iteration limit)")
         logger.success(f"Original: {len(self.existing_scenarios)}")
         logger.success(f"Generated: {len(self.generated_scenarios)}")
         logger.success(

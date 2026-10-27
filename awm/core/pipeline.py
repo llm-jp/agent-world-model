@@ -1,16 +1,27 @@
 import os
 from dataclasses import dataclass
+
 from loguru import logger
 
-from awm.core.scenario import Config as ScenarioConfig, run as run_scenario
-from awm.core.task import Config as TaskConfig, run as run_task
-from awm.core.db import Config as DbConfig, run as run_db
-from awm.core.sample import Config as SampleConfig, run as run_sample
-from awm.core.spec import Config as SpecConfig, run as run_spec
-from awm.core.env import Config as EnvConfig, run as run_env
+from awm.core.db import Config as DbConfig
+from awm.core.db import run as run_db
+from awm.core.env import Config as EnvConfig
+from awm.core.env import run as run_env
+from awm.core.sample import Config as SampleConfig
+from awm.core.sample import run as run_sample
+from awm.core.scenario import Config as ScenarioConfig
+from awm.core.scenario import run as run_scenario
+from awm.core.spec import Config as SpecConfig
+from awm.core.spec import run as run_spec
+from awm.core.task import Config as TaskConfig
+from awm.core.task import run as run_task
 from awm.core.verifier import (
     Config as VerifierConfig,
+)
+from awm.core.verifier import (
     VerificationMode,
+)
+from awm.core.verifier import (
     run as run_verifier,
 )
 
@@ -36,8 +47,8 @@ class Config:
         assert os.path.exists(self.input), f"Seed scenario file {self.input} not found"
         os.makedirs(self.output_dir, exist_ok=True)
 
-        if os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
-            self.model = os.environ.get("AWM_SYN_OVERRIDE_MODEL")
+        if override_model := os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
+            self.model = override_model
 
         assert self.model != "your-llm-model-name", (
             "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"

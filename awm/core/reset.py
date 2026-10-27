@@ -1,12 +1,13 @@
-import json
 import os
-from loguru import logger
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+
+from loguru import logger
+from tqdm import tqdm
+
 from awm.core.db import create_sqlite_database
 from awm.core.sample import execute_sample_data
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from tqdm import tqdm
-from awm.tools import tools_jsonl_load, normalize_scenario_name, find_scenario_entry
+from awm.tools import find_scenario_entry, normalize_scenario_name, tools_jsonl_load
 
 
 @dataclass
@@ -24,7 +25,9 @@ class Config:
             f"Sample data file {self.input_sample} not found"
         )
         if self.scenarios:
-            self.scenarios = {normalize_scenario_name(name) for name in self.scenarios}
+            self.scenarios = sorted(
+                {normalize_scenario_name(name) for name in self.scenarios}
+            )
 
 
 def process_schema(schema_item, database_dir, sample_data_dict):
@@ -45,7 +48,7 @@ def process_schema(schema_item, database_dir, sample_data_dict):
             successful, failed, _ = execute_sample_data(
                 db_path, sample_data, scenario_name
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Error executing sample data for {scenario_name}: {e}")
             has_error = True
 
@@ -116,7 +119,7 @@ def reset_all_databases(
     input_db: str,
     input_sample: str,
     database_dir: str = "./outputs/databases",
-    scenarios: set[str] | None = None,
+    scenarios: list[str] | None = None,
 ):
 
     logger.info("=" * 100)
@@ -166,7 +169,7 @@ def reset_all_databases(
             else:
                 no_error_scenarios.append(scenario_name)
 
-    logger.info(f"=" * 100)
+    logger.info("=" * 100)
     logger.info(
         f"Database reset done! Total/Success/Has_Errors = {len(db_schemas_data)}/{total_successful}/{total_failed}"
     )

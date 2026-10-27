@@ -1,29 +1,31 @@
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
+
+from loguru import logger
+from tqdm import tqdm
+
 from awm.gpt import GPTClient
 from awm.prompts import (
     ENVIRONMENT_GENERATION_SYSTEM_PROMPT,
     ENVIRONMENT_GENERATION_USER_PROMPT,
 )
-from loguru import logger
-from dataclasses import dataclass
-from tqdm import tqdm
-import json
-import os
-import subprocess
-import shutil
-import time
-import signal
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import sys
 from awm.tools import (
-    tools_robust_json_loads,
-    normalize_scenario_name,
     format_db_schema,
-    tools_token_count,
-    wait_port_free,
-    wait_for_server,
     get_random_available_port,
-    tools_jsonl_save,
+    normalize_scenario_name,
     tools_jsonl_load,
+    tools_jsonl_save,
+    tools_robust_json_loads,
+    tools_token_count,
+    wait_for_server,
+    wait_port_free,
 )
 
 PYTHON_VERSION = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -46,9 +48,9 @@ class Config:
             "Output path .jsonl is required"
         )
         if self.allowed_scenarios:
-            self.allowed_scenarios = {
-                normalize_scenario_name(name) for name in self.allowed_scenarios
-            }
+            self.allowed_scenarios = sorted(
+                {normalize_scenario_name(name) for name in self.allowed_scenarios}
+            )
         assert self.input_spec and os.path.exists(self.input_spec), (
             f"API spec file {self.input_spec} not found"
         )
@@ -56,8 +58,8 @@ class Config:
             f"Database file {self.input_db} not found"
         )
 
-        if os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
-            self.model = os.environ.get("AWM_SYN_OVERRIDE_MODEL")
+        if override_model := os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
+            self.model = override_model
 
         assert self.model != "your-llm-model-name", (
             "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
@@ -131,7 +133,7 @@ Please analyze the error and provide a summary with the problematic code snippet
 
     for raw_msg, response in zip(raw_error_msg_list, responses):
         if not response:
-            logger.error(f"failed to summarize error message: Empty response")
+            logger.error("failed to summarize error message: Empty response")
             summaries.append(raw_msg)  # Fallback to raw message
         else:
             logger.info(
@@ -159,9 +161,9 @@ def load_existing_env_results(output_path: str) -> dict[str, dict]:
 
 
 def test_run_specific_env(idx: int, env_config: dict) -> tuple[bool, str, dict]:
+    import random
     import tempfile
     import uuid
-    import random
 
     random.seed(idx)
     scenario_name = normalize_scenario_name(env_config["scenario"])
@@ -267,11 +269,7 @@ def test_run_specific_env(idx: int, env_config: dict) -> tuple[bool, str, dict]:
         return True, "", env_config
 
     finally:
-        # clean up temp directory
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def batch_test_environments(
@@ -284,7 +282,7 @@ def batch_test_environments(
         f"testing {len(env_configs)} environments in parallel (max_workers={max_workers})..."
     )
 
-    results: list[tuple[bool, str, dict]] = [None] * len(env_configs)
+    results: dict[int, tuple[bool, str, dict]] = {}
     passed = 0
     failed = 0
 
@@ -309,7 +307,7 @@ def batch_test_environments(
                 else:
                     failed += 1
                     logger.debug(f"{scenario_name}: test failed due to {result}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 failed += 1
                 logger.error(f"test execution failed for index {idx}: {e}")
                 results[idx] = (False, str(e), env_configs[idx])
@@ -322,7 +320,7 @@ def batch_test_environments(
     logger.info(
         f"batch test done: {passed} passed, {failed} failed out of {len(env_configs)} total"
     )
-    return results
+    return [results[idx] for idx in range(len(env_configs))]
 
 
 def test_all_environments(args: Config):
@@ -542,7 +540,7 @@ def generate_all_environments(args: Config):
                         )
                         parse_failed.append((api_spec_item, error_msg, response))
 
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     error_msg = "The generated code violates the expected format. You must follow the specified format strictly."
                     logger.error(
                         f"Failed to parse environment for {scenario_name}: {e}"

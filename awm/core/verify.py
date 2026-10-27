@@ -6,26 +6,27 @@ Supports two verification modes:
 - "code": Run verifier code that deterministically returns "complete" or "others".
 """
 
+import asyncio
 import inspect
 import json
 import os
 import re
 import sqlite3
-import asyncio
 from dataclasses import dataclass
-from textwrap import dedent
 from enum import Enum
+from pathlib import Path
+from textwrap import dedent
 
 from loguru import logger
 from openai import AsyncOpenAI
 
 from awm.tools import (
-    tools_jsonl_load,
-    tools_json_save,
+    find_scenario_entry,
     normalize_azure_url,
     resolve_llm_config,
     sanitize_for_json,
-    find_scenario_entry,
+    tools_json_save,
+    tools_jsonl_load,
 )
 
 
@@ -121,7 +122,7 @@ def execute_sql_verifier(verifier_code, function_name, initial_db_path, final_db
         try:
             original_modes[path] = os.stat(path).st_mode
             os.chmod(path, 0o444)
-        except Exception:
+        except OSError:
             pass
 
     try:
@@ -131,7 +132,7 @@ def execute_sql_verifier(verifier_code, function_name, initial_db_path, final_db
             "os": os,
             "__builtins__": __builtins__,
         }
-        exec(verifier_code, namespace)
+        exec(verifier_code, namespace)  # noqa: S102
 
         verify_func = namespace.get(function_name)
         if not verify_func:
@@ -149,13 +150,13 @@ def execute_sql_verifier(verifier_code, function_name, initial_db_path, final_db
 
         return result
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"execution_status": "error", "error_message": f"Execution error: {e}"}
     finally:
         for path, mode in original_modes.items():
             try:
                 os.chmod(path, mode)
-            except Exception:
+            except OSError:
                 pass
 
 
@@ -181,7 +182,7 @@ def execute_code_verifier(
         try:
             original_modes[path] = os.stat(path).st_mode
             os.chmod(path, 0o444)
-        except Exception:
+        except OSError:
             pass
 
     try:
@@ -192,7 +193,7 @@ def execute_code_verifier(
             "re": re,
             "__builtins__": __builtins__,
         }
-        exec(verifier_code, namespace)
+        exec(verifier_code, namespace)  # noqa: S102
 
         verify_func = namespace.get(function_name)
         if not verify_func:
@@ -223,7 +224,7 @@ def execute_code_verifier(
             "raw_result": result,
         }
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {
             "result": "others",
             "execution_status": "error",
@@ -233,7 +234,7 @@ def execute_code_verifier(
         for path, mode in original_modes.items():
             try:
                 os.chmod(path, mode)
-            except Exception:
+            except OSError:
                 pass
 
 
@@ -342,7 +343,7 @@ async def run_llm_judge(
             verification_json_str = json.dumps(
                 verification_json, ensure_ascii=False, indent=2, default=str
             )
-        except Exception:
+        except (TypeError, ValueError):
             verification_json_str = str(verification_json)
 
         user_prompt = (
@@ -386,7 +387,7 @@ async def run_llm_judge(
 
         return classification, result
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"LLM judge failed: {e}")
         return "judge_error", {"error": str(e)}
 
@@ -406,8 +407,9 @@ async def run_verify(config: Config):
     if not os.path.exists(trajectory_path):
         raise FileNotFoundError(f"trajectory.json not found in {run_dir}")
 
-    with open(trajectory_path, encoding="utf-8") as f:
-        trajectory_data = json.load(f)
+    trajectory_data = json.loads(
+        await asyncio.to_thread(Path(trajectory_path).read_text, encoding="utf-8")
+    )
 
     scenario = trajectory_data.get("scenario")
     task_id = trajectory_data.get("task_id")

@@ -4,7 +4,6 @@ This is a minimal bridge around `mcp-adapted-bench`: https://github.com/Raibows/
 """
 
 import asyncio
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -23,11 +22,7 @@ for _p in _CANDIDATE_PATHS:
         break
 
 
-from awm.tools import (
-    tools_robust_json_loads,
-    tools_json_save,
-)
-
+from mcp_adapted_bench.bfcl.runner import run_bfcl_evaluation
 from mcp_adapted_bench.common.infer_config import (
     EvalMode,
     InferEvalConfig,
@@ -36,10 +31,13 @@ from mcp_adapted_bench.common.llm_client import (
     LLMCaller,
     build_openai_client,
 )
-from mcp_adapted_bench.bfcl.runner import run_bfcl_evaluation
-from mcp_adapted_bench.tau2.runner import run_tau2_evaluation
 from mcp_adapted_bench.mcp_universe.runner import run_mcp_universe_evaluation
+from mcp_adapted_bench.tau2.runner import run_tau2_evaluation
 
+from awm.tools import (
+    tools_json_save,
+    tools_robust_json_loads,
+)
 
 logger.remove()
 logger.add(sys.stdout, level="INFO")
@@ -54,7 +52,8 @@ def _read_completed_task_ids(output_dir: Path) -> set[str]:
     for p in traj_dir.glob("*.json"):
         try:
             data = tools_robust_json_loads(p.as_posix())
-        except Exception:
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Skipping unreadable trajectory {p}: {e}")
             continue
         if isinstance(data, list) and data:
             data = data[0]
@@ -87,7 +86,7 @@ def _setup_resume(config: InferEvalConfig) -> None:
                     f"--resume: previous run mode={prev.get('mode')} != {config.mode.value}. "
                     "Ignoring stale config; existing trajectories may be skipped anyway."
                 )
-        except Exception:
+        except (OSError, ValueError, AttributeError):
             pass
     n = len(_read_completed_task_ids(od))
     logger.info(f"Resume: found {n} completed trajectories in {od}")

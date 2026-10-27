@@ -8,8 +8,8 @@ import contextlib
 import io
 import json
 import logging
-import re
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -18,34 +18,36 @@ from datetime import datetime
 from textwrap import dedent
 
 from loguru import logger
+from mcp.types import TextContent
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
-from awm.tools import (
-    tools_robust_json_loads,
-    tools_jsonl_load,
-    tools_json_save,
-    isolated_mcp_env,
-    normalize_scenario_name,
-    get_random_available_port,
-    async_wait_for_server,
-    resolve_llm_config,
-    find_scenario_entry,
-)
 from awm.core.server import (
     Config as ServerConfig,
+)
+from awm.core.server import (
     _prepare_database,
     start_server_process,
 )
-
+from awm.tools import (
+    async_wait_for_server,
+    find_scenario_entry,
+    get_random_available_port,
+    isolated_mcp_env,
+    resolve_llm_config,
+    tools_json_save,
+    tools_jsonl_load,
+    tools_robust_json_loads,
+)
 
 for _name in ["mcp_agent", "mcp", "httpx", "httpcore", "anyio"]:
     logging.getLogger(_name).setLevel(logging.CRITICAL)
     logging.getLogger(_name).propagate = False
     logging.getLogger(_name).handlers = []
 
-from mcp_agent.app import MCPApp
 from mcp_agent.agents.agent import Agent
-from mcp_agent.config import Settings, MCPSettings, MCPServerSettings, LoggerSettings
+from mcp_agent.app import MCPApp
+from mcp_agent.config import LoggerSettings, MCPServerSettings, MCPSettings, Settings
 
 logger.disable("mcp_agent")
 logger.disable("mcp")
@@ -185,8 +187,7 @@ def parse_call_tool_arguments(arguments: dict | str | None) -> tuple[str, dict]:
     tool_name = arguments.get("tool_name", "")
     inner_args = arguments.get("arguments", {})
 
-    if tool_name.startswith("mcp_tool_"):
-        tool_name = tool_name[len("mcp_tool_") :]
+    tool_name = tool_name.removeprefix("mcp_tool_")
 
     if isinstance(inner_args, str):
         parsed = tools_robust_json_loads(inner_args) if inner_args.strip() else {}
@@ -279,10 +280,10 @@ def format_tools_for_response(tools: list[dict]) -> str:
                     docs_text += f"   {line}\n"
 
         if input_schema and input_schema.get("properties"):
-            docs_text += f"   Parameters:\n"
+            docs_text += "   Parameters:\n"
             docs_text += format_input_schema(input_schema)
         else:
-            docs_text += f"   Parameters: None\n"
+            docs_text += "   Parameters: None\n"
 
         docs_text += "\n"
 
@@ -321,42 +322,38 @@ class MCPToolExecutor:
 
     async def list_tools(self) -> list[dict]:
         with contextlib.redirect_stderr(io.StringIO()):
-            async with self._app.run():
-                async with self._agent:
-                    result = await asyncio.wait_for(
-                        self._agent.list_tools(), timeout=self.timeout
-                    )
-                    self._tools = []
-                    for t in result.tools:
-                        tool_info = {
-                            "name": t.name,
-                            "description": t.description or "",
-                            "inputSchema": t.inputSchema or {},
-                        }
-                        self._tools.append(tool_info)
-                    return self._tools
+            async with self._app.run(), self._agent:
+                result = await asyncio.wait_for(
+                    self._agent.list_tools(), timeout=self.timeout
+                )
+                self._tools = []
+                for t in result.tools:
+                    tool_info = {
+                        "name": t.name,
+                        "description": t.description or "",
+                        "inputSchema": t.inputSchema or {},
+                    }
+                    self._tools.append(tool_info)
+                return self._tools
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         with contextlib.redirect_stderr(io.StringIO()):
-            async with self._app.run():
-                async with self._agent:
-                    result = await asyncio.wait_for(
-                        self._agent.call_tool(tool_name, arguments),
-                        timeout=self.timeout,
-                    )
-                    # Extract text from result content
-                    parts = []
-                    for c in result.content:
-                        if hasattr(c, "text"):
-                            parts.append(c.text)
-                        else:
-                            parts.append(str(c))
+            async with self._app.run(), self._agent:
+                result = await asyncio.wait_for(
+                    self._agent.call_tool(tool_name, arguments),
+                    timeout=self.timeout,
+                )
+                # Extract text from result content
+                parts = [
+                    c.text if isinstance(c, TextContent) else str(c)
+                    for c in result.content
+                ]
 
-                    text = "\n".join(parts)
+                text = "\n".join(parts)
 
-                    if result.isError:
-                        return f"Error: {text}"
-                    return text
+                if result.isError:
+                    return f"Error: {text}"
+                return text
 
 
 async def generate_response(
@@ -366,13 +363,15 @@ async def generate_response(
     config: Config,
     use_vllm_extras: bool = False,
 ) -> tuple[str, list[dict]]:
-    api_messages = []
+    api_messages: list[ChatCompletionMessageParam] = []
     for msg in messages:
         role = msg["role"]
         content = msg.get("content", "")
 
-        if role in ("system", "user"):
-            api_messages.append({"role": role, "content": content})
+        if role == "system":
+            api_messages.append({"role": "system", "content": content})
+        elif role == "user":
+            api_messages.append({"role": "user", "content": content})
         elif role == "assistant":
             api_messages.append({"role": "assistant", "content": content})
         elif role == "tool":
@@ -391,21 +390,23 @@ async def generate_response(
                     {"role": "user", "content": f"Tool response:\n{content}"}
                 )
 
-    kwargs = dict(
-        model=model_name,
-        messages=api_messages,
-        max_completion_tokens=config.max_tokens,
-        temperature=config.temperature,
-    )
-
-    if use_vllm_extras:
-        kwargs["extra_body"] = {
+    extra_body = (
+        {
             "add_generation_prompt": True,
             "min_tokens": 16,
             "chat_template_kwargs": {"enable_thinking": True},
         }
+        if use_vllm_extras
+        else None
+    )
 
-    response = await client.chat.completions.create(**kwargs)
+    response = await client.chat.completions.create(
+        model=model_name,
+        messages=api_messages,
+        max_completion_tokens=config.max_tokens,
+        temperature=config.temperature,
+        extra_body=extra_body,
+    )
 
     content = response.choices[0].message.content or ""
     tool_calls = parse_tool_calls(content)
@@ -421,7 +422,7 @@ async def run_agent(config: Config):
     if config.task:
         task = config.task
 
-    elif config.scenario and config.task_id is not None:
+    elif scenario and task_id is not None:
         tasks_data = tools_jsonl_load(config.tasks_path)
         entry = find_scenario_entry(tasks_data, scenario)
         if not entry:
@@ -588,10 +589,10 @@ async def run_agent(config: Config):
                 )
                 try:
                     response_text = await mcp.call_tool(tool_name, tool_args)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     response_text = f"Error: Tool call timed out after {mcp.timeout}s"
                     logger.error(response_text)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     response_text = f"Error: {e}"
                     logger.error(f"Tool call failed: {e}")
             else:

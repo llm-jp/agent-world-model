@@ -1,6 +1,9 @@
 import asyncio
+import sys
 from dataclasses import dataclass
+
 from loguru import logger
+
 from awm.tools import check_mcp_server
 
 
@@ -25,4 +28,4 @@ def run(config: Config):
         logger.info(f"Tools count: {tools_count}")
     else:
         logger.error(f"Server check failed at {config.url}: {error}")
-        exit(1)
+        sys.exit(1)

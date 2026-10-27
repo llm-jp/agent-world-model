@@ -1,25 +1,27 @@
 import json
-import sqlite3
 import os
-from enum import Enum
-from dataclasses import dataclass
+import sqlite3
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
+
 from loguru import logger
 from tqdm import tqdm
 
 from awm.gpt import GPTClient
-from awm.tools import (
-    tools_robust_json_loads,
-    normalize_scenario_name,
-    tools_jsonl_save,
-    tools_jsonl_load,
-    dump_sqlite_to_string,
-)
 from awm.prompts import (
-    VERIFIER_SQL_GENERATION_SYSTEM_PROMPT,
-    VERIFIER_SQL_GENERATION_USER_PROMPT,
     CODE_VERIFICATION_SYSTEM_PROMPT,
     CODE_VERIFICATION_USER_PROMPT,
+    VERIFIER_SQL_GENERATION_SYSTEM_PROMPT,
+    VERIFIER_SQL_GENERATION_USER_PROMPT,
+)
+from awm.tools import (
+    dump_sqlite_to_string,
+    normalize_scenario_name,
+    tools_jsonl_load,
+    tools_jsonl_save,
+    tools_robust_json_loads,
 )
 
 
@@ -55,19 +57,19 @@ class Config:
         )
 
         if self.allowed_scenarios:
-            self.allowed_scenarios = {
-                normalize_scenario_name(name) for name in self.allowed_scenarios
-            }
+            self.allowed_scenarios = sorted(
+                {normalize_scenario_name(name) for name in self.allowed_scenarios}
+            )
 
-        if os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
-            self.model = os.environ.get("AWM_SYN_OVERRIDE_MODEL")
+        if override_model := os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
+            self.model = override_model
 
         assert self.model != "your-llm-model-name", (
             "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
         )
 
 
-def _load_db_dump_worker(args: tuple) -> tuple[str, str, str | None]:
+def _load_db_dump_worker(args: tuple[str, str]) -> tuple[str, str, str, None]:
     scenario, database_dir = args
     db_path = f"{database_dir}/{normalize_scenario_name(scenario)}.db"
     if not os.path.exists(db_path):
@@ -120,12 +122,12 @@ def execute_verification_code(
     try:
         os.chmod(initial_db_path, 0o444)
 
-        namespace = {
+        namespace: dict[str, Any] = {
             "sqlite3": sqlite3,
             "json": json,
         }
 
-        exec(python_code, namespace)
+        exec(python_code, namespace)  # noqa: S102
 
         verify_func = namespace.get(function_name)
         if not verify_func:
@@ -163,15 +165,15 @@ def execute_verification_code(
 
         return {"execution_status": "success", "result": result}
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {
             "execution_status": "error",
-            "error_message": f"Execution error: {str(e)}",
+            "error_message": f"Execution error: {e!s}",
         }
     finally:
         try:
             os.chmod(initial_db_path, original_mode)
-        except Exception:
+        except OSError:
             pass
 
 
@@ -185,7 +187,7 @@ def load_existing_results(output_path: str) -> dict[str, dict]:
     for item in data:
         scenario = normalize_scenario_name(item["scenario"])
         task = item["task"]
-        verification = verification = item.get("verification", {})
+        verification = item.get("verification", {})
         if (
             verification
             and verification.get("code")
@@ -507,7 +509,7 @@ Provide:
                         continue
                     state["generation_result"] = result
                     state["last_code"] = result.get("python_code", "")
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     state["error_history"].append(f"Failed to parse response: {e}")
                     if current_attempt < max_attempts:
                         pending_keys.append(key)

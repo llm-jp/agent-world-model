@@ -1,28 +1,29 @@
-import re
-import os
-import orjson
-import json_repair
-import json
-import time
-import socket
-import subprocess
 import asyncio
 import contextlib
 import io
+import json
+import os
 import random
-
-from tiktoken import encoding_for_model
-from json_repair import repair_json
+import re
+import socket
+import subprocess
+import time
 from pathlib import Path
+from typing import Any
+
+import json_repair
+import orjson
+from json_repair import repair_json
 from loguru import logger
-from mcp_agent.app import MCPApp
 from mcp_agent.agents.agent import Agent
-from mcp_agent.config import Settings, MCPSettings, MCPServerSettings, LoggerSettings
+from mcp_agent.app import MCPApp
+from mcp_agent.config import LoggerSettings, MCPServerSettings, MCPSettings, Settings
+from tiktoken import encoding_for_model
 
 
 def dump_sqlite_to_string(db_path: str) -> str:
-    from contextlib import closing
     import sqlite3
+    from contextlib import closing
 
     with closing(sqlite3.connect(db_path)) as conn:
         conn.text_factory = str
@@ -54,8 +55,6 @@ def dump_sqlite_to_string(db_path: str) -> str:
 
             try:
                 data_cur = conn.execute(f'SELECT * FROM "{name}"')
-                col_count = len(data_cur.description)
-
                 for row in data_cur:
                     values_sql = []
                     for v in row:
@@ -148,7 +147,7 @@ def isolated_mcp_env():
     saved_env = dict(os.environ)
 
     keys_to_remove = []
-    for key in os.environ.keys():
+    for key in os.environ:
         is_safe = (
             any(key.startswith(prefix) for prefix in MCP_ENV_SAFE_PREFIXES)
             or key in MCP_ENV_SAFE_KEYS
@@ -227,9 +226,9 @@ async def check_mcp_server(
                         if len(tools) == 0:
                             return (False, 0, [], "No tools available from MCP server")
                         return (True, len(tools), tools, None)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return (False, 0, [], f"Timeout after {timeout}s")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 return (False, 0, [], str(e))
 
 
@@ -246,8 +245,8 @@ async def async_wait_for_server(port: int, timeout: float = 60.0) -> bool:
                 return True
             else:
                 last_err = err
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
         await asyncio.sleep(0.5)
 
     if last_err:
@@ -339,20 +338,11 @@ def format_db_schema(db_schema: dict) -> str:
     return "\n".join(parts)
 
 
-def tools_robust_json_loads(s: str) -> dict:
-    if isinstance(s, Path):
-        s = s.as_posix()
-        is_path = True
-    else:
-        is_path = False
-
-    if (
-        isinstance(s, str)
-        and os.path.exists(s)
-        and (s.endswith(".json") or s.endswith(".jsonl"))
-        or is_path
+def tools_robust_json_loads(s: str | Path | list) -> Any:
+    if isinstance(s, Path) or (
+        isinstance(s, str) and os.path.exists(s) and s.endswith((".json", ".jsonl"))
     ):
-        s = open(s, "r", encoding="utf-8").read()
+        s = Path(s).read_text(encoding="utf-8")
 
     if isinstance(s, str) and s.strip() == "":
         return {}
@@ -365,12 +355,12 @@ def tools_robust_json_loads(s: str) -> dict:
 
     try:
         return orjson.loads(s)
-    except Exception:
+    except ValueError:
         pass
 
     try:
         return json.loads(s)
-    except Exception:
+    except ValueError:
         pass
 
     s = _sanitize_for_json_utf8(s)
@@ -392,22 +382,21 @@ def normalize_scenario_name(scenario: str) -> str:
 
 def tools_jsonl_load(path: str) -> list[dict]:
     with open(path, "r", encoding="utf-8") as f:
-        return [json.loads(line) for line in f.readlines()]
+        return [json.loads(line) for line in f]
 
 
 def tools_jsonl_save(data: list[dict], path: str, append: bool = False):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     mode = "a" if append else "w"
     with open(path, mode, encoding="utf-8") as f:
-        for item in data:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        f.writelines(json.dumps(item, ensure_ascii=False) + "\n" for item in data)
 
 
 def tools_token_count(text: str, model: str) -> int:
     try:
         enc = encoding_for_model(model)
         return len(enc.encode(text))
-    except Exception:
+    except (KeyError, ValueError):
         logger.warning(
             f"Failed to get token count for model {model}, fallback to length of text"
         )
@@ -422,10 +411,10 @@ def tools_json_save(data: dict | list, path: str):
     with open(path, "w", encoding="utf-8", errors="replace") as f:
         try:
             json.dump(data, f, indent=4, ensure_ascii=False, default=json_default)
-        except Exception as e:
+        except (TypeError, ValueError) as e:
             print(f"Failed to save JSON to {path}: {e}, fallback to repair_json")
-            data = repair_json(str(data), return_objects=True)
-            json.dump(data, f, indent=4, ensure_ascii=False, default=json_default)
+            repaired = repair_json(str(data), return_objects=True)
+            json.dump(repaired, f, indent=4, ensure_ascii=False, default=json_default)
 
 
 def normalize_azure_url(base_url: str) -> str:
@@ -491,11 +480,10 @@ def resolve_llm_config(
 
     # --- resolve model ---
     model = model_override or os.environ.get("AWM_SYN_OVERRIDE_MODEL", "")
-    if not model:
-        if require_model:
-            raise ValueError(
-                "AWM_SYN_OVERRIDE_MODEL not set and no model override provided"
-            )
+    if not model and require_model:
+        raise ValueError(
+            "AWM_SYN_OVERRIDE_MODEL not set and no model override provided"
+        )
 
     return api_url, api_key, model
 

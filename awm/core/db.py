@@ -1,18 +1,20 @@
-import sqlite3
 import os
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+
+from loguru import logger
+
 from awm.gpt import GPTClient
 from awm.prompts import (
     DATABASE_GENERATION_SYSTEM_PROMPT,
     DATABASE_GENERATION_USER_PROMPT,
 )
-from loguru import logger
-from dataclasses import dataclass
 from awm.tools import (
-    tools_jsonl_save,
-    tools_jsonl_load,
-    tools_robust_json_loads,
     normalize_scenario_name,
+    tools_jsonl_load,
+    tools_jsonl_save,
+    tools_robust_json_loads,
     tools_token_count,
 )
 
@@ -35,9 +37,9 @@ class Config:
             "Output path .jsonl is required"
         )
         if self.allowed_scenarios:
-            self.allowed_scenarios = {
-                normalize_scenario_name(name) for name in self.allowed_scenarios
-            }
+            self.allowed_scenarios = sorted(
+                {normalize_scenario_name(name) for name in self.allowed_scenarios}
+            )
 
 
 def summarize_errors(
@@ -68,7 +70,7 @@ def summarize_errors(
 
     for raw_msg, response in zip(raw_error_msg_list, responses):
         if not response:
-            logger.error(f"Failed to summarize error message: Empty response")
+            logger.error("Failed to summarize error message: Empty response")
             summaries.append(raw_msg)  # Fallback to raw message
         else:
             logger.info(
@@ -113,7 +115,7 @@ def create_sqlite_database(
 
             successful_tables += 1
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Error creating table {table_name}: {e}")
             failed_tables += 1
             error_messages.add(f"Table {table_name}: {str(e)[:3000]}")
@@ -197,7 +199,7 @@ def generate_all_databases(args: Config):
         responses = client.batch_chat_completion(current_requests, progress_bar=True)
 
         next_items = []
-        next_requests = []
+        retry_errors: list[tuple[dict, str]] = []
 
         for data, response in zip(current_items, responses):
             scenario_name = data["scenario"]
@@ -249,7 +251,7 @@ def generate_all_databases(args: Config):
                         )
                         continue
 
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.error(
                         f"Failed to generate/create database for {scenario_name}: {e}"
                     )
@@ -282,23 +284,24 @@ def generate_all_databases(args: Config):
                     )
 
                 next_items.append(data)
-                next_requests.append((data, combined_error_msg))
+                retry_errors.append((data, combined_error_msg))
             else:
-                min_error, min_error_result = sorted(
+                min_error, min_error_result = min(
                     history_data_messages[temp], key=lambda x: x[0]
-                )[0]
+                )
                 results.append(min_error_result)
                 logger.error(
                     f"Given up on {scenario_name} after {max_retries + 1} attempts. Selecting best result with error_ratio={min_error:.2%}"
                 )
 
-        if next_requests:
+        next_requests = []
+        if retry_errors:
             summarized_errors = summarize_errors(
-                args, client, [req[1] for req in next_requests]
+                args, client, [req[1] for req in retry_errors]
             )
             next_requests = [
                 create_request(req[0], err_msg)
-                for req, err_msg in zip(next_requests, summarized_errors)
+                for req, err_msg in zip(retry_errors, summarized_errors)
             ]
 
         current_items = next_items

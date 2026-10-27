@@ -1,16 +1,17 @@
-import json
+import os
+from dataclasses import dataclass
+
+from loguru import logger
+
 from awm.gpt import GPTClient
 from awm.prompts import API_GENERATION_SYSTEM_PROMPT, API_GENERATION_USER_PROMPT
 from awm.tools import (
-    tools_robust_json_loads,
-    tools_jsonl_load,
-    tools_jsonl_save,
     format_db_schema,
     normalize_scenario_name,
+    tools_jsonl_load,
+    tools_jsonl_save,
+    tools_robust_json_loads,
 )
-from loguru import logger
-from dataclasses import dataclass
-import os
 
 
 @dataclass
@@ -28,8 +29,8 @@ class Config:
             "Output path .jsonl is required"
         )
 
-        if os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
-            self.model = os.environ.get("AWM_SYN_OVERRIDE_MODEL")
+        if override_model := os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
+            self.model = override_model
 
         assert self.model != "your-llm-model-name", (
             "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
@@ -118,7 +119,7 @@ def generate_all_api_specs(args: Config):
                         )
                         continue
 
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.error(f"Failed to parse API spec for {scenario_name}: {e}")
                     logger.error(f"Response preview: {response[:200]}...")
                     need_retry = True

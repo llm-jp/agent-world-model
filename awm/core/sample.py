@@ -1,22 +1,24 @@
+import os
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+
+from loguru import logger
+
+from awm.core.db import create_sqlite_database
 from awm.gpt import GPTClient
 from awm.prompts import (
     SAMPLE_DATA_GENERATION_SYSTEM_PROMPT,
     SAMPLE_DATA_GENERATION_USER_PROMPT,
 )
 from awm.tools import (
-    tools_robust_json_loads,
+    format_db_schema,
+    normalize_scenario_name,
     tools_jsonl_load,
     tools_jsonl_save,
-    normalize_scenario_name,
-    format_db_schema,
+    tools_robust_json_loads,
     tools_token_count,
 )
-from loguru import logger
-from dataclasses import dataclass
-from awm.core.db import create_sqlite_database
-import os
 
 
 @dataclass
@@ -37,8 +39,8 @@ class Config:
         assert os.path.exists(self.input_db), f"Database file {self.input_db} not found"
         assert self.output.endswith(".jsonl"), "Output path .jsonl is required"
 
-        if os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
-            self.model = os.environ.get("AWM_SYN_OVERRIDE_MODEL")
+        if override_model := os.environ.get("AWM_SYN_OVERRIDE_MODEL"):
+            self.model = override_model
 
         assert self.model != "your-llm-model-name", (
             "Please set the model name in the environment variable AWM_SYN_OVERRIDE_MODEL"
@@ -73,7 +75,7 @@ def summarize_errors(
 
     for raw_msg, response in zip(raw_error_msg_list, responses):
         if not response:
-            logger.error(f"Failed to summarize error message: Empty response")
+            logger.error("Failed to summarize error message: Empty response")
             summaries.append(raw_msg)  # Fallback to raw message
         else:
             logger.info(
@@ -131,8 +133,8 @@ def execute_sample_data(
 
     except Exception as e:
         conn.rollback()
-        error_messages.add(f"Transaction failed: {str(e)}")
-        raise e
+        error_messages.add(f"Transaction failed: {e!s}")
+        raise
     finally:
         conn.close()
 
@@ -272,8 +274,8 @@ def generate_and_insert_sample_data(args: Config):
                         )
                         continue
 
-                except Exception as e:
-                    error_msg = f"Failed to parse or process sample data: {str(e)}"
+                except Exception as e:  # noqa: BLE001
+                    error_msg = f"Failed to parse or process sample data: {e!s}"
                     logger.error(
                         f"Failed to process sample data for {scenario_name}: {e}"
                     )
@@ -312,9 +314,9 @@ def generate_and_insert_sample_data(args: Config):
                 next_items.append(task_item)
                 next_requests.append((task_item, combined_error_msg))
             else:
-                min_error, min_error_result = sorted(
+                min_error, min_error_result = min(
                     history_data_messages[temp], key=lambda x: x[0]
-                )[0]
+                )
                 results.append(min_error_result)
                 logger.error(
                     f"Given up on {scenario_name} after {max_retries + 1} attempts. Selecting best result with {min_error_result['inserts_count']} inserts. error_ratio={min_error}"
@@ -334,7 +336,7 @@ def generate_and_insert_sample_data(args: Config):
     tools_jsonl_save(results, args.output)
 
     logger.success(f"\n{'=' * 100}")
-    logger.success(f"Sample data generation complete!")
+    logger.success("Sample data generation complete!")
     logger.info(f"Scenarios processed: {len(results)}/{len(tasks_data)}")
     logger.info(f"Total INSERT statements executed: {total_successful}")
 

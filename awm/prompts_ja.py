@@ -13,21 +13,21 @@ TASK_GENERATION_USER_PROMPT = """次のシナリオについて、現実的で�
 5. 各タスクは、実行に必要な情報をすべて含む 1 文にすること。たとえば、ツイートを投稿するタスクならツイートの本文を含め、天気を問い合わせるタスクなら具体的な場所を含めること。
 6. シナリオが通常は認証を必要とする場合、認証・ログイン・ログアウト・ユーザー登録のタスクは除外すること。ユーザーはすでにログインしているものとする
 7. シナリオが通常は認証を必要とする場合、すべてのタスクは現在認証されているユーザーの視点で書くこと
-8. タスクの JSON 配列だけを返し、それ以外の文章や注釈は付けないこと
+8. "tasks" キーに {num_tasks} 件のタスクの文字列を格納した配列を持つ、有効な JSON オブジェクトだけを返すこと。それ以外の文章、注釈、Markdown のコードフェンス、省略記号は付けないこと
 9. このシナリオは、タスクを完了するための API エンドポイントを提供する簡略版である。ファイルのダウンロードやページを開くなど、ユーザーの直接操作が必要なタスクは生成しないこと。
+10. シナリオで提供される機能の範囲内で、タスク全体の操作の種類が偏らないようにすること。検索・一覧・詳細の取得に加え、対応している場合は登録・更新・削除、状態の変更、取得結果を使う複数手順の操作を織り交ぜること。照会専用サービスでは書き込み操作を作らず、検索条件、集計、比較、複数段階の取得を変えて多様性を確保すること
+11. 日時を条件や操作の予定として使う場合は、年を含む絶対日時とタイムゾーンを明記すること(日付だけで十分な場合は年月日)。日本国内の日時は、別途指定がなければ日本標準時(Asia/Tokyo)とする。「今日」「本日」「明日」「直近」など実行時刻で意味が変わる条件は使わず、期間は開始・終了日時を明記すること。投稿本文など、指定する文字列そのものに含まれる表現はそのまま保持してよい
 
 例:
-- シナリオ "Amazon" なら、「『ノートパソコン』で検索し、最も安い商品をカートに追加する」
-- シナリオ "Reddit" なら、「サブレディット 'r/python' の投稿数を取得する」
-- シナリオ "Expedia" なら、「10 月 1 日のニューヨーク発ロンドン行きの航空券を予約する」
-- シナリオ "Twitter/X" なら、「写真付きのツイートを投稿し、代替テキスト『街に沈む夕日』を設定し、ハッシュタグ #Photography を付けて @Adobe をメンションする」
-- シナリオ "LinkedIn" なら、「プロフィールの見出しを『シニアデータアナリスト | SQL, Python, Tableau』に更新し、自己紹介欄をビジネスへの貢献を強調した 3 段落の簡潔な要約に書き直す」
-- シナリオ "Facebook" なら、「最新の投稿を友達リストに共有する」
-- シナリオ "Google Maps" なら、「サンフランシスコで最も人気のあるレストランを 5 件取得する」
+- シナリオ "e-Stat API" なら、「2020 年国勢調査の統計表から東京都と大阪府の総人口を取得し、差を求める」
+- シナリオ "Slack API" なら、「#dev-team チャンネルに『2026 年 11 月 3 日 18 時(日本標準時)からリリース作業を開始します』と投稿し、その投稿に :rocket: のリアクションを付ける」
+- シナリオ "Python Execution" なら、「1 から 100 までの素数の合計を計算する」
+- シナリオ "Amazon Selling Partner API" なら、「SKU『TSHIRT-BLK-M』の出品価格を 2,480 円に変更し、在庫数を 30 に更新する」
+- シナリオ "Route Search API" なら、「2026 年 11 月 3 日 9 時(日本標準時)に新宿駅を出発して横浜駅へ向かう経路のうち、乗換回数が最も少ない経路の所要時間と運賃を取得する」
 
 
 
-出力形式:
+出力形式(以下は構造の説明。実際の出力では省略記号を使わず、タスクを指定件数すべて列挙すること):
 {{
     "tasks": [
         "タスク 1 の説明",
@@ -36,278 +36,6 @@ TASK_GENERATION_USER_PROMPT = """次のシナリオについて、現実的で�
         "タスク {num_tasks} の説明"
     ]
 }}"""
-
-API_GENERATION_SYSTEM_PROMPT = """あなたは API 設計とバックエンドアーキテクチャの専門家です。既存のデータベーススキーマに基づき、与えられたすべてのユーザータスクを実現できる、機械可読な RESTful API ドキュメントを設計するのがあなたの仕事です。"""
-
-API_GENERATION_USER_PROMPT = """簡略版の {scenario_name} について、既存のデータベーススキーマに基づき、次のタスクをすべて実現できる、エージェントにとって扱いやすい完全なインターフェース仕様を設計してください。生成した仕様は、インターフェース層を詳細に実装するときの指針として使われます。
-
-ユーザータスク:
-{tasks_list}
-
-既存の SQLite データベーススキーマ:
-{database_schema}
-
-
-必須要件:
-1. アトミックな API エンドポイントを設計すること。各エンドポイントは、明確に定義された 1 つの操作だけを行う
-2. API 仕様は FastAPI、SQLAlchemy ORM、Pydantic v2 と互換でなければならない
-3. 再利用性を最大化すること。組み合わせて与えられたタスクを実現できる、基本的な CRUD 操作を作る
-4. API はデータベーススキーマに完全に従わなければならない。スキーマにあるテーブル名・カラム名・リレーションをそのまま明示的に使う
-5. RESTful の慣習(GET、POST、PUT、DELETE、PATCH)に従い、適切なリソースパスを使うこと
-6. 関連するエンドポイントは、リソースの種類ごとに論理的にグループ化すること
-7. 少数の複雑なエンドポイントより、小さく組み合わせやすいエンドポイントを多く作ること
-8. 複雑なタスクには、連鎖させて使える個別のアトミックな操作を設計すること
-9. 各エンドポイントが、与えられたデータベーススキーマの 1 つ以上のテーブルに直接対応するようにすること
-10. 認証用のエンドポイント(ログイン、ログアウト、登録、トークン更新)は含めないこと。ユーザーはすでに認証済みとする
-11. すべての操作は、暗黙的に user_id=1 の認証済みユーザーとして行う
-12. ユーザー固有のデータは常に自動で user_id=1 で絞り込むこと。user_id をパラメータとして要求しない
-13. 有効な JSON だけを返し、それ以外の文章は付けないこと
-
-
-エージェント向けの要件(すべてのエンドポイントで必須):
-- summary: 目的を表す 1 行(80 文字以内)。AI エージェントにとって明確で行動に移しやすいもの
-- description: 1 行(200 文字以内、改行なし)。エンドポイントが何をするか、いつ使うかを説明する
-- operation_id: 一意な snake_case の識別子。エージェントがエンドポイントをプログラムから特定して呼び出すのに使う
-- tags: 論理的なグループを表す配列(例: ["products"]、["orders"])。エージェントが関連するエンドポイントを見つけるのに役立つ
-- request_params: type、param_type(query/path/body)、required フラグ、description、example を含む完全なパラメータ仕様
-- response: フィールドの型・説明・例を含む詳細なレスポンススキーマ。エージェントがレスポンスを解析して理解できるようにする
-
-
-リクエストパラメータの要件:
-- 各パラメータには type、param_type、required、description、example を必ず含めること
-- param_type は "query"、"path"、"body" のいずれかでなければならない
-- パラメータの目的がはっきりわかる、説明的な名前を使うこと
-- 期待される値を示す、現実的な例を示すこと
-- 文字列のパラメータには日本語が渡されることがある(名前、住所、検索キーワード、本文など)。ASCII に限定する制約(pattern や enum など)を付けず、日本語の値をそのまま受け付ける設計にすること
-- 名前やキーワードで検索・絞り込みするパラメータは、日本語の値でも部分一致で検索できるようにすること
-- 日本語が入りうる値は path パラメータにせず、query または body で受け取ること。リソースの特定には ID を path パラメータとして使う
-- データが日本語で格納されうるパラメータの example には、日本語の値を使うこと
-
-
-レスポンススキーマの要件:
-- すべてのフィールドを含む完全なレスポンス構造を定義すること
-- 各フィールドには type、description、example を必ず含めること
-- 配列型には、フィールド定義をすべて含む "items" を入れること
-- すべてのエンドポイントで一貫した命名規則を使うこと
-
-
-出力形式:
-{{
-    "api_groups": [
-        {{
-            "group_name": "Products",
-            "endpoints": [
-                {{
-                    "path": "/api/products",
-                    "method": "GET",
-                    "summary": "絞り込み条件を指定して商品を一覧する",
-                    "description": "商品のページ分割された一覧を取得する。商品カタログを閲覧・検索するときに使う。",
-                    "operation_id": "list_products",
-                    "tags": ["products"],
-                    "request_params": {{
-                        "category": {{
-                            "type": "string",
-                            "param_type": "query",
-                            "required": false,
-                            "description": "カテゴリ名で商品を絞り込む",
-                            "example": "家電"
-                        }},
-                        "min_price": {{
-                            "type": "float",
-                            "param_type": "query",
-                            "required": false,
-                            "description": "最低価格(米ドル)での絞り込み",
-                            "example": 10.0
-                        }}
-                    }},
-                    "response": {{
-                        "products": {{
-                            "type": "array",
-                            "items": {{
-                                "id": {{
-                                    "type": "integer",
-                                    "description": "商品の一意な識別子",
-                                    "example": 1
-                                }},
-                                "name": {{
-                                    "type": "string",
-                                    "description": "商品の表示名",
-                                    "example": "iPhone 15 Pro"
-                                }},
-                                "price": {{
-                                    "type": "float",
-                                    "description": "商品の価格(米ドル)",
-                                    "example": 999.99
-                                }}
-                            }}
-                        }}
-                    }},
-                    "required_tables": ["products"],
-                    "required_fields": {{
-                        "products": ["id", "name", "price", "category"]
-                    }}
-                }}
-            ]
-        }}
-    ]
-}}"""
-
-DATABASE_GENERATION_SYSTEM_PROMPT = """あなたは SQLite のスキーマ設計を専門とするデータベースアーキテクトです。与えられたユーザーの意図を完全に実現できる、完全なデータベーススキーマを作るのがあなたの仕事です。"""
-
-DATABASE_GENERATION_USER_PROMPT = """簡略版の {scenario_name} について、次のユーザーの意図を実現できる完全な SQLite データベーススキーマを設計してください。
-
-ユーザーの意図({num_tasks} 件のタスク):
-{user_intentions}
-
-要件:
-1. 与えられたすべてのユーザーの意図を実現するのに必要なテーブルをすべて作ること
-2. 適切な主キー、外部キー、インデックス、制約を含めること
-3. SQLite に適したデータ型(TEXT、INTEGER、REAL、BLOB)を使うこと
-4. 必要に応じてタイムスタンプ(created_at、updated_at)を追加すること
-5. DDL 文にはサンプルのレコードを含めないこと
-6. 与えられたユーザーの意図を実現するのに必要なテーブルとフィールドだけを作ること
-7. password_hash、salt、token、session など認証に関するフィールドは除外すること。認証は外部で行われるものとする
-8. users テーブルが必要な場合は、プロフィールに必要なフィールド(id、username、email、プロフィール情報)だけを含めること
-9. すべての操作は user_id=1 の認証済みユーザーとして行われる
-10. DDL 文を含む有効な JSON だけを返すこと
-
-出力形式(コメントは含めないこと):
-{{
-    "tables": [
-        {{
-            "name": "users",
-            "ddl": "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL, full_name TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);",
-            "indexes": [
-                "CREATE INDEX idx_users_email ON users(email);"
-            ]
-        }}
-    ]
-}}"""
-
-
-ENVIRONMENT_GENERATION_SYSTEM_PROMPT = """あなたは、エージェントにとって扱いやすい RESTful API を専門とする FastAPI バックエンド開発者です。すべてのエンドポイントには、明確な OpenAPI メタデータ、完全なリクエスト・レスポンスの型付け、機械可読なドキュメントが必要です。あなたは API 仕様と SQLite データベーススキーマから、きれいで実行可能な FastAPI エンドポイントの実装を生成します。ユーザープロンプトの制約に厳密に従い、指定された形式どおりに出力してください。"""
-
-ENVIRONMENT_GENERATION_USER_PROMPT = """与えられたインターフェース仕様とデータベーススキーマに基づき、簡略版の {scenario_name} を模擬する、単一で完全に自己完結したインターフェース実装(FastAPI を使い MCP で公開する 1 つの Python ファイル)を生成してください。
-
-前提:
-- Python のバージョン: {PYTHON_VERSION}
-- FastAPI は Pydantic v2 と互換なバージョン(Config の `orm_mode` など v1 専用の機能は使わないこと)
-
-API 仕様:
-{api_spec}
-
-データベーススキーマ:
-{database_schema}
-
-
-環境と設定の要件:
-- os をインポートし、SQLite データベースの URL を環境変数 `DATABASE_PATH` から読み込むこと
-- `DATABASE_PATH` が未設定または空の場合は、既定値 sqlite:///xxxx.db を使うこと
-- uvicorn のエントリポイントでは、HOST を環境変数 `HOST` から読み込むこと(未設定なら "127.0.0.1")
-- uvicorn のエントリポイントでは、PORT を環境変数 `PORT` から読み込み(未設定なら 8000)、int に変換すること
-
-SQLAlchemy の設定の要件:
-- すべてのテーブルに、declarative_base を使った SQLAlchemy ORM を使うこと
-- データベース URL: DATABASE_PATH の値(または上で述べた既定値)を使うこと。DATABASE_PATH は完全な URL なので、接頭辞(例: sqlite://)や接尾辞を付け加えないこと
-- データベースセッション用に engine と SessionLocal(sessionmaker)を作ること
-- ORM の継承用に Base = declarative_base() を定義すること
-- データベーススキーマにあるすべてのテーブルについて ORM モデルを定義すること(余分なテーブルやカラムは作らない)
-- すべての ORM モデルを定義した後で Base.metadata.create_all(engine) を呼ぶこと
-- `metadata`、`query`、`query_class` という名前の ORM 属性は絶対に定義しないこと。スキーマにこれらの名前のカラムがある場合は、末尾にアンダースコアを付けた安全な Python の属性名(例: `metadata_`)を使い、Column("metadata", ...) で実際のカラム名に対応付けること
-- SQLAlchemy の declarative の内部と衝突する ORM クラス属性をほかにも定義しないこと(たとえば Base.metadata を上書きしない)
-- 2 つのテーブルの間に外部キーの経路が複数ある場合は、次のどちらかにすること:
-  - AmbiguousForeignKeysError を避けるため relationship(..., foreign_keys=[...]) を明示する、または
-  - relationship を省略し、relationship() の代わりに明示的なクエリで関連する行にアクセスする
-- SQLAlchemy からインポートするときは、実在して必要な、標準の公開シンボルだけを使うこと。`PRIMARY_KEY_CONSTRAINT` のような存在しない内部シンボルや、でっち上げた大文字の定数をインポート・参照しないこと
-- ORM 関連のヘルパー(declarative_base、relationship、sessionmaker など)は sqlalchemy.orm からインポートすること。ORM の内部を sqlalchemy.__init__ からインポートしないこと
-
-
-必須要件:
-1. API 仕様のすべてのエンドポイントを、完全に動作するコードで実装すること。API 仕様は参考にすぎず、正とするのはデータベーススキーマである。
-2. パス、HTTP メソッド、パラメータ(query/path/body)、レスポンス形式は、できる限り API 仕様に従うこと。
-3. データベーススキーマに厳密に従うこと。テーブル名・カラム・型・外部キーを正しく使い、テーブルやカラムをでっち上げないこと。
-4. エンドポイントのハンドラ関数は、すべて async で自己完結していなければならない。
-5. SQLAlchemy ORM だけを使うこと(生の SQL は使わない)。
-6. ユーザー固有の操作は、該当する場合は暗黙的に user_id=1 で絞り込まなければならない。
-7. エンドポイントごとのセッションのライフサイクル:
-   - 最初に session = SessionLocal() とする
-   - INSERT/UPDATE/DELETE では session.commit() を呼ぶ
-   - 返す前に session.close() を呼ぶ
-8. プレースホルダは使わず、完全に実行可能なコードを書くこと。ダミーやプレースホルダのエンドポイントは作らないこと。
-9. ルートのパスパラメータ(例: /api/products/{{product_id}})は、関数の引数として現れなければならない。
-10. コードでは次のものを厳禁とする: コメント、try/except、エラー処理、型以外の検証、HTTPException、JSONResponse、グローバルな例外ハンドラ、同じパスと HTTP メソッドへのルートの重複登録、未定義のモデル・フィールド・テーブルへの参照、スキーマにない FTS テーブルや補助テーブル、レスポンスモデルを組み立てるための動的・内省的な小細工。
-11. Pydantic のレスポンスでは、真偽値は 0/1 ではなく本物の bool フィールドにすること。
-12. FastAPI の app は、どのルートデコレータよりも前に定義しなければならない。
-13. 最後に、環境変数の HOST と PORT を使う uvicorn のエントリポイントを含めること:
-
-    if __name__ == "__main__":
-        import uvicorn, os
-        host = os.getenv("HOST", "127.0.0.1")
-        port = int(os.getenv("PORT", "8000"))
-        uvicorn.run(app, host=host, port=port)
-
-14. 生成する Python ファイルは、構文エラーのない有効な Python {PYTHON_VERSION} でなければならない。Python の予約語を関数の引数名やキーワード引数名に使わないこと。データベースのカラム名や API のフィールド名が Python のキーワード(例: "return"、"class"、"global")である場合は、末尾にアンダースコアを付けた安全な Python の識別子(例: return_)を使い、Column("return", ...) や Field(..., alias="return") で実際のカラム名や JSON フィールドに対応付けること。
-15. (パス, HTTP メソッド)の組ごとに、ルート関数はちょうど 1 つでなければならない。同じパスと HTTP メソッドに対して、一時的であっても複数のハンドラを宣言しないこと。
-
-
-Pydantic モデルの要件(Pydantic v2):
-- Pydantic v2 からインポートすること(例: from pydantic import BaseModel, Field, ConfigDict)
-- すべてのエンドポイントについて、リクエストとレスポンスのモデルを定義すること
-- すべてのフィールドに、description と example の両方を指定した Field を使うこと
-- 各ルートデコレータで指定する response_model は、関数が返すものと正確に一致しなければならない
-- 各ルートデコレータの response_model 引数は、このファイルで定義した具体的な Pydantic BaseModel のサブクラスへの直接の参照(例: MyResponseModel、List[MyResponseModel])でなければならず、動的に計算・内省した式であってはならない。response_model を生成するために __annotations__、__mro__、.__class__、メタクラスなどの小細工を使わないこと
-- エンドポイントの戻り値の型注釈は response_model と一致し(例: MyResponseModel、List[MyResponseModel])、有効な Pydantic のフィールド型でなければならない。Union[...] の戻り値型、Response 型、Union[Response, dict, None] のような混合を使わないこと
-- ORM オブジェクトを返す場合は、model_config を使って Pydantic v2 用にモデルを設定すること。例:
-```
-  class SomeModel(BaseModel):
-      model_config = ConfigDict(from_attributes=True)
-      ...
-```
-
-- 古い Pydantic v1 の Config と orm_mode = True は使わないこと
-- 評価できない型注釈の原因になりうる Annotated などの高度な型の小細工は使わないこと
-- 標準の typing の型だけを使うこと: int、float、str、bool、Optional[T]、List[T]、Dict[str, T]
-- フィールド名は、そのフィールド自身の型注釈の名前と(大文字小文字を区別しても区別しなくても)決して同じにしてはならない。API 仕様やデータベーススキーマでそれが必要な場合は、必ず別の snake_case のフィールド名(例: `schedule_date: date`、`event_datetime: datetime`)を選び、シリアライズ用のエイリアスを設定すること。例: `schedule_date: date = Field(..., serialization_alias="date", ...)`
-- Pydantic のフィールド名が、同じモジュールで使われている型名やクラス名と衝突しないようにすること
-
-
-エージェント向けの拡張(すべてのエンドポイントのデコレータで必須):
-- summary: 目的を表す 1 行(80 文字以内)
-- description: 1 行(200 文字以内、改行なし)
-- tags: 論理的なグループを表す配列(例: ["products"]、["orders"])
-- operation_id: 一意な snake_case の識別子
-- response_model: 返す値に直接対応する具体的な Pydantic モデルのクラス(または List[Model] のような typing)
-
-
-コードスタイル(必須):
-- app = FastAPI(...) は、どの @app.get/post/put/patch/delete デコレータよりも前に置かなければならない
-- 必要に応じて fastapi の Query/Path/Body/Depends を使うこと
-- ORM のリレーションに relationship を使うのは、曖昧さがない場合か、SQLAlchemy の AmbiguousForeignKeysError を避けるため foreign_keys を明示した場合だけにすること
-- SELECT: session.query(Model).filter(...).all()/first()
-- INSERT: session.add(...); session.commit()
-- UPDATE: ORM オブジェクトを取得し、属性を変更してから session.commit()
-- DELETE: session.delete(obj); session.commit()
-- 宣言した response_model に正確に従う Python の dict/list か Pydantic モデルを返すこと
-- Python の予約語を属性名、関数の引数、キーワード引数名に使わないこと。スキーマや API がそのような名前を使う場合は、末尾にアンダースコアを付けた安全な Python の名前を使い、Column("name", ...) や Field(..., alias="name") で対応付けること
-- コメント、例外ハンドラ、防御的プログラミング、プレースホルダのコード、FastAPI や Pydantic まわりの動的なハックは書かないこと
-
-
-出力形式(最重要):
-- FastAPI アプリの完全で有効な Python ソースコードだけを返さなければならない
-- 応答は Python のコードだけで構成しなければならない。Markdown、文章、説明、JSON のラッパー、キー、コードフェンスを含めないこと
-- コードを JSON で包まないこと。外側の構造を付け加えないこと。応答そのものがファイルの中身である
-- 応答の最初の行は、`import` や `from` などの有効な Python の文でなければならない(例: `import os`、`from fastapi import FastAPI`)
-- 改行をエスケープしないこと。.py ファイルに書かれるとおりにコードを出力すること
-- Python 以外の文字列(「コードは次のとおりです:」、バッククォート、JSON など)を少しでも含めると、出力は無効になる
-- 応答全体が、そのまま .py ファイルとして保存して実行できる、単一の自己完結した Python モジュールでなければならない
-
-
-念押し:
-- 与えられたデータベーススキーマにある実体だけを使うこと。API 仕様は参考にすぎない。API 仕様とデータベーススキーマが矛盾する場合は、データベーススキーマを優先すること。API 仕様どおりに書くとバグになる場合は、必ずデータベーススキーマを正とすること。API 仕様の文面に従うことよりも、コードがエラーなく実行できることを優先すること
-- すべてのエンドポイントが、未定義の名前、インポートの欠落、モデルの欠落なしに動くようにすること
-- コードが初回実行時に環境変数 DATABASE_PATH で指定された SQLite データベースを作成し、指定したレスポンスモデルですべてのエンドポイントを正しく提供できるようにすること
-"""
-
 
 SAMPLE_DATA_GENERATION_SYSTEM_PROMPT = """あなたは、AI エージェントのタスク実行用の網羅的なテストデータセットを作ることを専門とする、データベースエンジニア兼データ生成の専門家です。エージェントが API 呼び出しを通じて与えられたすべてのユーザータスクを確実に完了できる、現実的で多様なサンプルデータを生成するのがあなたの仕事です。
 
@@ -340,10 +68,11 @@ SAMPLE_DATA_GENERATION_USER_PROMPT = """簡略版の {scenario_name} につい�
 
 データ生成の方針:
 上に挙げた各タスクについて、必要なデータを分析し、次のことを保証すること:
-1. タスクで言及されるすべての実体がデータベースに存在する
-2. タスクを完了するのに必要なリレーションがすべて正しく張られている
+1. タスクが前提とする参照先と、更新・削除の対象が初期データに存在する。ただし、タスク内で新規作成する実体は事前に作らず、作成に必要な参照先だけを用意する
+2. 初期状態で必要なリレーションが正しく張られている。複数手順の途中で作成する実体やリレーションは事前に作らない
 3. クエリの結果が、意味のある空でないデータを返す
 4. 堅牢なテストのために、エッジケースやバリエーションが網羅されている
+5. 更新対象は指定された変更前の状態、削除対象は未削除の状態にする。状態変更やリアクションの追加など、タスクで実現する結果を初期データに先取りしない。各タスクは共通の初期データから独立に実行されるものとし、ほかのタスクが先に実行された状態を前提にしない
 
 
 必須要件:
@@ -374,8 +103,8 @@ INSERT 文の形式(必須):
 エージェントのタスクを網羅するための要件:
 1. 検索・絞り込みのタスク: 検索条件に一致するデータと一致しないデータの両方を、多様に作ること
 2. 一覧・取得のタスク: 意味のある結果を返せるよう、複数のレコード(少なくとも 5〜10 件)を作ること
-3. 作成(POST)のタスク: 参照されるすべての実体(ユーザー、カテゴリなど)が存在するようにすること
-4. 更新(UPDATE/PATCH)のタスク: 変更できる既存のレコードを作ること
+3. 作成(POST)のタスク: 既存であるべき参照先(ユーザー、カテゴリなど)を作り、新規作成対象は作らないこと。新規作成を妨げる一意制約の衝突も避けること
+4. 更新(UPDATE/PATCH)のタスク: 変更できる既存のレコードを作り、タスクが指定する変更後の状態を先取りしないこと
 5. 削除のタスク: 安全に削除できる、消してもかまわないレコードを作ること
 6. 集計のタスク(件数、合計、平均): 意味のある統計になるよう、十分な量のデータを作ること
 7. リレーションのタスク: すべての外部キーの参照が有効で、クエリで辿れるようにすること
@@ -387,8 +116,9 @@ INSERT 文の形式(必須):
 3. ステータスのバリエーションを含めること(有効/無効、保留中/完了など)
 4. 数値の範囲を網羅すること(低・中・高の価格、数量、評価)
 5. テキストのバリエーションを含めること(短い説明と長い説明、異なるカテゴリ)
-6. タイムスタンプには ISO 8601 形式を使うこと: YYYY-MM-DD HH:MM:SS または datetime('now', '-N days')
+6. 日時はスキーマが要求する形式と精度に従い、固定の絶対日時を使うこと。タスクの日時・期間・タイムゾーンに整合するデータを作り、UTC で格納するスキーマでは正しく変換すること。タイムゾーンを持たない日時は、別途指定がなければ日本標準時(Asia/Tokyo)として扱う。datetime('now', ...) や CURRENT_TIMESTAMP など実行時刻に依存する値は使わず、日時カラムにそのような既定値がある場合も固定値を明示すること
 7. 堅牢なテストを支えられるだけのデータ量を作ること
+8. 名称・説明・本文などの自然言語の値と reasoning は原則日本語で書くこと。タスクで指定された名称・本文・検索語などは、表記と値を正確に保持すること。ID、コード、メールアドレス、URL、列挙値などはスキーマや API の仕様に従い、機械的に翻訳しないこと
 
 
 出力形式:
@@ -398,57 +128,205 @@ INSERT 文の形式(必須):
             "table_name": "users",
             "reasoning": "これらの INSERT 文がどのように与えられたユーザータスクを支え、データベーススキーマに厳密に準拠しているかの簡潔な説明(100 語以内)。",
             "insert_statements": [
-                "INSERT INTO users (id, username, email, full_name, created_at) VALUES (1, 'current_user', 'user@example.com', 'Current User', datetime('now', '-60 days'));",
-                "INSERT INTO users (id, username, email, full_name, created_at) VALUES (2, 'other_user', 'other@example.com', 'Other User', datetime('now', '-30 days'));"
+                "INSERT INTO users (id, username, email, full_name, created_at) VALUES (1, 'current_user', 'user@example.com', '山田太郎', '2026-09-01 09:00:00');",
+                "INSERT INTO users (id, username, email, full_name, created_at) VALUES (2, 'other_user', 'other@example.com', '佐藤花子', '2026-10-01 09:00:00');"
             ]
         }},
         {{
             "table_name": "products",
             "reasoning": "これらの INSERT 文がどのように与えられたユーザータスクを支え、データベーススキーマに厳密に準拠しているかの簡潔な説明(100 語以内)。",
             "insert_statements": [
-                "INSERT INTO products (name, description, price, user_id, created_at) VALUES ('Product A', 'Description A', 29.99, 1, datetime('now', '-20 days'));",
-                "INSERT INTO products (name, description, price, user_id, created_at) VALUES ('Product B', 'Description B', 49.99, 1, datetime('now', '-15 days'));"
+                "INSERT INTO products (name, description, price, user_id, created_at) VALUES ('折りたたみ傘', '軽量で持ち運びやすい雨傘', 29.99, 1, '2026-10-10 09:00:00');",
+                "INSERT INTO products (name, description, price, user_id, created_at) VALUES ('保温ボトル', '容量 500ml の保温ボトル', 49.99, 1, '2026-10-15 09:00:00');"
             ]
-        }},
-        ...
+        }}
     ]
 }}
 """
 
 
-SCENARIO_CATEGORY_LIST = [
-    "E-commerce/Marketplace",
-    "Booking/Reservation",
-    "Social/Community",
-    "Task/Project Management",
-    "Finance/Banking",
-    "Subscription/Membership",
-    "Inventory/Catalog",
-    "Messaging/Communication",
-    "Lists/Collections",
-    "Scheduling/Calendar",
-    "Forms/Surveys",
-    "Settings/Configuration",
-    "Healthcare/Medical",
-    "Education/Learning",
-    "Real Estate/Property",
-    "HR/Recruiting",
-    "Legal/Compliance",
-    "Logistics/Shipping",
-    "Food/Restaurant",
-    "Entertainment/Gaming",
-    "Fitness/Wellness",
-    "Travel/Hospitality",
-    "Automotive",
-    "IoT/Smart Devices",
-    "Developer Tools",
-    "CRM/Sales",
-    "Content Management",
-    "Analytics/Reporting",
+# Single source for category names: the generation, classification and
+# category-diversity prompts below render their lists from it.
+SCENARIO_FOCUS_CATEGORIES = [
+    ["メール・連絡先", "メール検索", "下書き・送信", "連絡先管理"],
+    ["メッセージ・チャット", "チャンネル投稿", "返信", "通知", "Bot"],
+    ["予定・会議", "カレンダー", "オンライン会議", "リマインダー"],
+    [
+        "文書・ファイル管理",
+        "ドキュメント編集",
+        "ファイル共有",
+        "契約書管理",
+        "社内文書検索",
+    ],
+    ["タスク・メモ管理", "ToDo", "プロジェクトボード", "メモ", "ブックマーク"],
+    ["CRM・カスタマーサポート", "顧客管理", "商談管理", "問い合わせチケット"],
+    ["会計・経理", "仕訳", "請求書", "経費精算"],
+    ["人事・労務", "勤怠管理", "給与計算", "応募者管理"],
+    ["開発者向けツール", "リポジトリ", "Issue・プルリクエスト", "CI"],
+    [
+        "コード実行・ファイルシステム・ブラウザ操作",
+        "コード実行",
+        "シェル",
+        "ファイル操作",
+        "ブラウザ操作",
+    ],
+    ["買い物・注文", "通販", "フードデリバリー", "注文履歴", "返品"],
+    ["出品・店舗運営", "出品管理", "在庫管理", "受注処理"],
+    ["予約", "飲食店", "宿泊", "航空券", "イベントチケット", "診療予約"],
+    ["決済・金融", "送金", "返金", "口座管理", "株価・為替", "ポートフォリオ"],
+    [
+        "契約・アカウント管理",
+        "携帯電話のプラン",
+        "公共料金",
+        "サブスクリプション",
+        "ポイント",
+    ],
+    ["物流・配送", "配送追跡", "集荷依頼", "再配達"],
+    ["地図・経路・交通", "住所検索", "地図", "経路検索", "運行情報"],
+    ["気象・防災", "天気予報", "警報・注意報", "地震・津波"],
+    ["公的統計・オープンデータ", "統計表", "地価・取引価格", "自治体オープンデータ"],
+    ["法令・文献・開示情報", "法令", "論文", "図書", "有価証券報告書"],
+    ["SNS・動画の管理", "投稿", "コメント", "フォロー", "再生リスト"],
+    [
+        "スマートホーム・車両の操作",
+        "家電の操作",
+        "センサー",
+        "車両の操作",
+        "カーシェア",
+    ],
 ]
 
+_SCENARIO_CATEGORY_NAMES_TEXT = "\n".join(
+    f"- {group[0]}" for group in SCENARIO_FOCUS_CATEGORIES
+)
+_SCENARIO_CATEGORY_GROUPS_TEXT = "\n".join(
+    f"- {group[0]}({'、'.join(group[1:])})" for group in SCENARIO_FOCUS_CATEGORIES
+)
 
-SCENARIO_GENERATION_SYSTEM_PROMPT = """あなたは、API 環境のシミュレーションとデータベースを使ったやり取りに非常に適した Web サイト・アプリ・デジタルプラットフォームを見つける専門家です。
+
+SCENARIO_CLASSIFICATION_SYSTEM_PROMPT = """あなたは、Web サイト・アプリ・API・開発者向けツールなどのデジタルプラットフォームを分析し、API 環境の合成とシミュレーションへの適性を判定する専門家です。
+
+## 「API 環境の合成」とは
+実在のプラットフォームを模した、シミュレーション用の API サーバーを作ります。エージェントはこの API を使ってユーザーのタスクを完了させます。シミュレーション環境は次を満たす必要があります:
+- 合成した(架空だが現実的な)データを持つ SQLite データベースがある
+- CRUD 操作や条件を指定した情報の取得のための RESTful API エンドポイントを提供する
+- 実在の外部データではなく、合成したデータでユーザーのワークフローを支えられる
+
+## 重要な原則: データを合成できるか
+
+### 合成できるデータ(架空だが現実的なもの):
+- 妥当な範囲の数値: 気温、価格、数量、評価、座標
+- 構造化された実体: ユーザー、商品、注文、予約、従業員、取引
+- ステータスの値: 注文状況、予約状況、タスクの進捗
+- 短いテキスト: 名前、タイトル、説明、住所、カテゴリ
+- 日付と時刻: タイムスタンプ、スケジュール、締め切り
+- 地理データ: 都市、国、緯度経度(静的なデータ)
+- 表形式のデータ: 時刻表、運行状況、株価の履歴、気象の記録、統計表の数値
+- 構造化された記録: 法令の条文、論文や図書の書誌情報(タイトル、著者、掲載誌、出版年、要旨)
+
+### 意味のある形で合成できないデータ:
+- 長い記事そのものが価値であるもの: ニュース記事、ブログ記事、百科事典の項目
+- メディアのコンテンツそのもの: 動画、音声、画像(メタデータではなく)
+- AI の推論: チャットボットの応答、ML モデルに基づく推薦
+- Web 検索の結果: 実在の Web 全体の検索インデックスに基づくランキング
+
+## 適性の基準:
+
+### 高い適性(スコア 8〜10):
+中心となる機能が、合成できるデータに対する CRUD 操作か、条件を指定した情報の取得である。例:
+- メール・チャット: Gmail、Slack(メール、メッセージ、チャンネル、連絡先)
+- 予定・文書・タスク: Google Calendar、Notion、Trello(予定、文書、タスク、メモ)
+- 業務システム: Salesforce、freee、SmartHR(顧客、問い合わせ、取引、勤怠、給与)
+- 開発者向けツール: GitHub(リポジトリ、Issue、プルリクエスト)
+- ファイルシステム: ファイル、ディレクトリ(作成・移動・検索)
+- 買い物・出品: Amazon、メルカリShops(商品、カート、注文、出品、在庫)
+- 予約: 飲食店予約、宿泊予約、航空券(空き枠、予約、フライト)
+- 決済・金融: 口座、取引、送金、銘柄、ポートフォリオ
+- 契約・アカウント管理: 携帯電話のプラン、公共料金、サブスクリプション、ポイント
+- 物流・配送: 荷物、配送状況、集荷
+- 地図・経路・交通: 地点、住所、経路、時刻表、運行状況
+- 気象・防災: 地点、予報、警報(すべて合成できる数値と短いテキスト)
+- 公的統計・オープンデータ: 統計表、地域、年次、統計値
+- 法令・文献・開示情報: 法令、条文、論文や図書の書誌情報、開示書類
+- スマートホーム・車両: 機器の状態、センサーの計測値、車両の状態
+
+主な特徴:
+- ユーザーが自分のデータを作成・更新・削除する、または条件を指定して構造化された記録を検索・取得する
+- データが構造化されており、現実的に偽造できる
+- 実体間の関係が明確である
+- 気象・交通・統計・法令・文献のような「外部データ」も、架空だがもっともらしい記録でシミュレーションできる
+
+### 中程度の適性(スコア 5〜7):
+CRUD 操作や情報の取得の機能はあるが、中心的な機能の一部が合成しにくいコンテンツに依存する。例:
+- YouTube: 再生リストや登録の管理はシミュレーションできるが、動画そのものが中心的な価値である
+- Spotify: 再生リストやライブラリの管理はシミュレーションできるが、音声そのものが中心的な価値である
+- Reddit・掲示板: 投稿、コメント、投票(短いコンテンツなら部分的にシミュレーションできる)
+- SNS: プロフィール、フォロー、メッセージはシミュレーションできるが、フィードのコンテンツの質にばらつきがある
+- コード実行・ブラウザ操作の環境: ファイルや実行履歴の管理はシミュレーションできるが、実際の実行結果は再現しにくい
+
+主な特徴:
+- CRUD 操作や情報の取得があり、シミュレーションできる
+- 一部の機能が、意味のある形で合成しにくいコンテンツに依存する
+- 管理や整理の側面に焦点を当てられる
+
+### 低い適性(スコア 1〜4):
+中心的な価値が合成できないコンテンツであるか、実在の外部サービスが必要である。例:
+- Wikipedia: 記事のコンテンツそのものが中心的な価値であり、意味のある形で偽造できない
+- ニュースサイト: 記事のコンテンツそのものが商品である
+- Web 検索エンジン: Google、Bing(実在の検索インデックスとランキングが必要)
+- AI・LLM サービス: ChatGPT(モデルの推論が必要)
+- 翻訳サービス: Google 翻訳(実在の翻訳モデルが必要)
+- 画像認識: 実在の ML モデルが必要
+
+主な特徴:
+- 「コンテンツ」や「知能」そのものが商品である
+- 架空のデータに置き換えると価値がすべて失われる
+- 実在の ML モデルや膨大な実在のコンテンツが必要である
+
+なお、法令・論文・図書などの文献を扱うサービスでも、条件を指定して条文や書誌情報を検索・取得することが中心であれば、高い適性として扱ってください。"""
+
+
+SCENARIO_CLASSIFICATION_USER_PROMPT_TEMPLATE = (
+    """次の Web サイト・アプリ・API を分析し、分類してください:
+
+名前: {name}
+説明: {description}
+
+詳細な分類を示してください:
+
+1. **categories**: このプラットフォームが属するカテゴリ(後述の一覧から当てはまるものをすべて選ぶ)
+2. **suitability_score**: API 環境の合成への適性を 1〜10 で評価したスコア
+3. **suitability_level**: "high"、"medium"、"low" のいずれか
+4. **reasoning**: 適している理由、または適していない理由
+5. **simulatable_features**: CRUD 操作や情報の取得の API でシミュレーションできる具体的な機能
+6. **non_simulatable_features**: シミュレーションできない機能
+
+categories は次のカテゴリ名から選び、表記を変えずにそのまま書いてください:
+"""
+    + _SCENARIO_CATEGORY_NAMES_TEXT
+    + """
+
+reasoning、simulatable_features、non_simulatable_features は日本語で書いてください。
+
+出力形式(JSON のみ、Markdown なし):
+{{
+    "categories": ["category1", "category2"],
+    "suitability_score": 8,
+    "suitability_level": "high",
+    "reasoning": "簡潔な説明",
+    "simulatable_features": ["機能 1", "機能 2"],
+    "non_simulatable_features": ["機能 1", "機能 2"]
+}}"""
+)
+
+
+SCENARIO_GENERATION_SYSTEM_PROMPT = f"""あなたは、API 環境のシミュレーションとデータベースを使ったやり取りに非常に適した Web サイト・アプリ・API・開発者向けツールなどのデジタルプラットフォームを見つける専門家です。
+
+## 適性の概要
+
+- 高い適性: 構造化された記録に対する操作が中心のプラットフォーム。条件を指定した情報の取得、記録の登録・修正・削除、状態の変更、予約や注文などの手続きを行う
+- 中程度の適性: 記録の操作と、合成しにくいコンテンツの両方を含むプラットフォーム。記録の操作の側面に焦点を当てる
+- 低い適性: コンテンツの作成や生成そのものが価値のプラットフォーム。記事や文章の執筆、画像・動画・音声の制作、翻訳、AI による応答や推薦の生成、Web 全体の検索とランキングを行う
 
 ## 重要な原則: データを合成できるか
 
@@ -461,35 +339,40 @@ SCENARIO_GENERATION_SYSTEM_PROMPT = """あなたは、API 環境のシミュレ�
 - 短いテキスト: 名前、タイトル、住所、カテゴリ、説明
 - タイムスタンプ: 日付、スケジュール、締め切り、履歴の記録
 - 地理: 都市、空港、座標(静的なデータ)
+- 構造化された記録: 統計表の数値、法令の条文、論文や図書の書誌情報、時刻表、運行状況
 
 ### 意味のある形で合成できないデータ:
 - 長い記事: ニュースのコンテンツ、ブログ記事、百科事典の項目
 - メディア: 動画や音声のコンテンツそのもの(メタデータではなく)
 - AI の推論: チャットボットの応答、ML に基づく推薦
-- 実在の検索: ランキング付きの検索エンジンの結果
+- 実在の検索: Web 全体を対象とするランキング付きの検索エンジンの結果
 
 ## 高い適性の例(これらを生成する):
 
 | プラットフォームの種類 | 適している理由 | 主な実体(すべて合成できる) |
 |---------------|--------------|----------------------------------|
-| EC | 注文やレビューの CRUD | 商品、注文、カート、レビュー |
-| タスク管理 | タスクの CRUD | タスク、ボード、担当の割り当て |
-| 銀行・フィンテック | 取引の CRUD | 口座、取引、振込 |
-| 予約 | 予約の CRUD | 掲載物件、予約、空き状況 |
-| 気象サービス | 気象データの照会 | 地点、予報、警報、履歴 |
-| 航空・旅行 | フライトの検索と予約 | フライト、空港、予約、価格 |
-| 株式取引 | 売買とポートフォリオ | 銘柄、売買、ポートフォリオ、価格 |
-| IoT・スマートホーム | 機器の制御 | 機器、センサー、計測値、スケジュール |
-| フィットネス記録 | トレーニングの記録 | トレーニング、種目、指標、目標 |
-| 医療 | 予約の管理 | 患者、予約、記録、処方 |
-| 人事・給与 | 従業員の管理 | 従業員、勤怠表、給与 |
-| CRM・営業 | 見込み客の管理 | 見込み客、商談、連絡先、活動 |
-| 在庫 | 在庫の管理 | 商品、在庫、倉庫 |
-| 物流 | 配送の追跡 | 出荷、荷物、ルート、状況 |
-| 飲食店・フード | 注文とメニュー | メニュー項目、注文、予約 |
-| 不動産 | 物件と内見 | 物件、掲載、内見、申し込み |
-| 教育・LMS | 講座と成績 | 講座、受講登録、課題、成績 |
-| イベント管理 | イベントとチケット | イベント、チケット、参加者、会場 |
+| メール・連絡先 | メールの検索・作成・送信 | メール、スレッド、ラベル、連絡先 |
+| メッセージ・チャット | 投稿と返信 | チャンネル、メッセージ、スレッド、メンバー |
+| 予定・会議 | 予定の作成と変更 | 予定、参加者、会議室、リマインダー |
+| 文書・ファイル管理 | 文書の作成・編集・共有 | 文書、フォルダ、共有設定、版 |
+| タスク・メモ管理 | タスクやメモの CRUD | タスク、ボード、メモ、ブックマーク |
+| CRM・カスタマーサポート | 顧客と問い合わせの管理 | 顧客、商談、問い合わせチケット、対応履歴 |
+| 会計・経理 | 取引の登録と照会 | 取引、勘定科目、請求書、経費 |
+| 人事・労務 | 従業員情報の管理 | 従業員、勤怠、休暇、給与 |
+| 開発者向けツール | Issue やレビューの管理 | リポジトリ、Issue、プルリクエスト、ワークフロー実行 |
+| ファイルシステム操作 | ファイルの作成・移動・検索 | ファイル、ディレクトリ、権限、実行履歴 |
+| 買い物・注文 | 商品の検索と注文 | 商品、カート、注文、返品 |
+| 出品・店舗運営 | 出品と在庫の管理 | 出品、SKU、在庫、受注 |
+| 予約 | 空き状況の確認と予約 | 店舗・施設、空き枠、予約、フライト |
+| 決済・金融 | 決済と口座の管理 | 口座、取引、送金、銘柄、ポートフォリオ |
+| 契約・アカウント管理 | 契約内容の照会と変更 | 契約、料金プラン、請求、ポイント |
+| 物流・配送 | 配送の追跡と依頼 | 荷物、配送状況、集荷、再配達 |
+| 地図・経路・交通 | 経路や運行状況の照会 | 地点、住所、路線、時刻表、運行情報 |
+| 気象・防災 | 予報や警報の照会 | 地域、予報、警報、地震情報 |
+| 公的統計・オープンデータ | 条件を指定した統計の取得 | 統計表、地域、年次、統計値 |
+| 法令・文献・開示情報 | 条文や書誌情報の検索と取得 | 法令、条文、論文、図書、開示書類 |
+| SNS・動画の管理 | 投稿や再生リストの管理 | 投稿、コメント、フォロー、再生リスト |
+| スマートホーム・車両の操作 | 機器の状態の取得と操作 | 機器、センサー、計測値、車両の状態 |
 
 ## 低い適性(避ける):
 
@@ -497,10 +380,12 @@ SCENARIO_GENERATION_SYSTEM_PROMPT = """あなたは、API 環境のシミュレ�
 |---------------|------------------|---------|
 | ニュースサイト(BBC、CNN) | 記事のコンテンツそのものが商品 | 意味のある記事を合成できない |
 | Wikipedia・百科事典 | 記事のコンテンツそのものが商品 | 知識を偽造できない |
-| 検索エンジン | 実在の検索インデックスとランキングが必要 | 関連度を模擬できない |
+| Web 検索エンジン | 実在の検索インデックスとランキングが必要 | 関連度を模擬できない |
 | AI アシスタント(ChatGPT) | 実在の AI の推論が必要 | AI の応答を偽造できない |
 | 翻訳(Google 翻訳) | 実在の NLP モデルが必要 | 翻訳を偽造できない |
 | コンテンツ中心のプラットフォーム | コンテンツが中心的な価値の場合 | メタデータだけでは足りない |
+
+ただし、統計・法令・文献・交通情報のように、条件を指定して構造化された記録を検索・取得する情報提供型のサービスは、データを合成できるため高い適性として扱う。
 
 ## 中程度の適性(CRUD の側面に焦点を当てる):
 
@@ -512,35 +397,34 @@ SCENARIO_GENERATION_SYSTEM_PROMPT = """あなたは、API 環境のシミュレ�
 
 ## 網羅すべきカテゴリ(多様性のため):
 
-E-commerce, Booking/Reservation, Task/Project Management, Finance/Banking,
-Weather/Environmental, Flight/Travel, Stock/Investment, IoT/Smart Home,
-Fitness/Health Tracking, Healthcare/Medical, HR/Recruiting, CRM/Sales,
-Inventory/Warehouse, Logistics/Shipping, Restaurant/Food, Real Estate,
-Education/LMS, Event/Ticketing, Legal/Contracts, Subscription Management,
-Customer Support, Forms/Surveys, Analytics Dashboards, Fleet Management,
-Utility Management (electricity, water), Insurance, Pet Services, Automotive
+{_SCENARIO_CATEGORY_GROUPS_TEXT}
+
+## 対象とするサービス:
+- Web サイトやアプリだけでなく、企業や公的機関が提供する API、SaaS の API、開発者向けツールも対象に含める
+- 日本国内で提供・利用されているサービスや、日本の公的機関(省庁、自治体、独立行政法人など)が提供するサービスを優先する
+- 海外のサービスを扱う場合も、日本の利用者が日本語で使う場面を想定する
 
 ## あなたのタスク:
-非常に適性の高い新しいプラットフォームを生成してください。つまり、データを現実的に合成でき、ユーザーが意味のある CRUD 操作を行うプラットフォームです。
+非常に適性の高い新しいプラットフォームを生成してください。つまり、データを現実的に合成でき、ユーザーが意味のある CRUD 操作や条件を指定した情報の取得を行うプラットフォームです。
 
 ## 出力言語:
 シナリオは日本語で生成してください。description は必ず日本語で書き、name だけは英語(ASCII の英数字と空白)で書いてください。例として示すシナリオが英語で書かれていても、出力は日本語にしてください。"""
 
 
-SCENARIO_GENERATION_USER_PROMPT_TEMPLATE = """適した Web サイト・アプリのシナリオの例を {num_examples} 件示します:
+SCENARIO_GENERATION_USER_PROMPT_TEMPLATE = """適した Web サイト・アプリ・API のシナリオの例を {num_examples} 件示します:
 
 {examples}
 
 ---
 
-では、上のどの例とも異なる、新しく多様な Web サイト・アプリ・プラットフォームのシナリオを {num_to_generate} 件生成してください。
+では、上のどの例とも異なる、新しく多様な Web サイト・アプリ・API・プラットフォームのシナリオを {num_to_generate} 件生成してください。
 
 要件:
-1. 各シナリオは API 環境の合成に適していなければならない(CRUD 操作、データベースとのやり取り)
+1. 各シナリオは API 環境の合成に適していなければならない(CRUD 操作、条件を指定した情報の取得、データベースとのやり取り)
 2. 例とは異なるインタラクションパターンや業界を扱うこと
 3. 有名なプラットフォーム、ニッチなサービス、B2B ツール、モバイルアプリ、専門的なツールを織り交ぜること
 4. 説明では、ユーザーが管理できる実体、使える操作、存在するワークフローを強調すること
-5. コンテンツ中心のサイト、リアルタイムデータのサイト、検索エンジン、AI の推論サービスは避けること
+5. コンテンツ中心のサイト、Web 検索エンジン、AI の推論サービスは避けること。ただし、統計・法令・文献・交通情報など、構造化された記録を検索・取得する情報提供型のサービスは対象に含める
 6. 各説明は 300〜600 字程度とし、実行できる機能に焦点を当てること
 7. name は英語(ASCII の英数字と空白)で書き、description は日本語で書くこと(例が英語でも description は日本語にする)
 
@@ -553,7 +437,7 @@ SCENARIO_GENERATION_USER_PROMPT_TEMPLATE = """適した Web サイト・アプ�
 新しいシナリオをちょうど {num_to_generate} 件生成してください:"""
 
 
-SCENARIO_FOCUSED_GENERATION_USER_PROMPT_TEMPLATE = """適した Web サイト・アプリのシナリオの例を {num_examples} 件示します:
+SCENARIO_FOCUSED_GENERATION_USER_PROMPT_TEMPLATE = """適した Web サイト・アプリ・API のシナリオの例を {num_examples} 件示します:
 
 {examples}
 
@@ -562,14 +446,14 @@ SCENARIO_FOCUSED_GENERATION_USER_PROMPT_TEMPLATE = """適した Web サイト・
 ## 重要: 次の特定のカテゴリに属するシナリオの生成に集中してください:
 {focus_categories}
 
-上のカテゴリを重視して、新しく多様な Web サイト・アプリ・プラットフォームのシナリオを {num_to_generate} 件生成してください。
+上のカテゴリを重視して、新しく多様な Web サイト・アプリ・API・プラットフォームのシナリオを {num_to_generate} 件生成してください。
 
 要件:
-1. 各シナリオは API 環境の合成に適していなければならない(CRUD 操作、データベースとのやり取り)
+1. 各シナリオは API 環境の合成に適していなければならない(CRUD 操作、条件を指定した情報の取得、データベースとのやり取り)
 2. 上の重点カテゴリを優先しつつ、その中でも多様性を確保すること
 3. 各カテゴリの中で異なるサブニッチを含めること(例: EC ならファッション、家電、B2B 卸売、オークション、レンタルマーケットプレイス)
 4. 説明では、ユーザーが管理できる実体、使える操作、存在するワークフローを強調すること
-5. コンテンツ中心のサイト、リアルタイムデータのサイト、検索エンジン、AI の推論サービスは避けること
+5. コンテンツ中心のサイト、Web 検索エンジン、AI の推論サービスは避けること。ただし、統計・法令・文献・交通情報など、構造化された記録を検索・取得する情報提供型のサービスは対象に含める
 6. 各説明は 300〜600 字程度とし、実行できる機能に焦点を当てること
 7. 実在するプラットフォーム、または存在しうる現実的なプラットフォームを考えること
 8. name は英語(ASCII の英数字と空白)で書き、description は日本語で書くこと(例が英語でも description は日本語にする)
@@ -581,34 +465,6 @@ SCENARIO_FOCUSED_GENERATION_USER_PROMPT_TEMPLATE = """適した Web サイト・
 ]
 
 新しいシナリオをちょうど {num_to_generate} 件生成してください:"""
-
-
-SCENARIO_FOCUS_CATEGORIES = [
-    ["E-commerce/Marketplace", "Retail", "Auction", "Rental marketplace"],
-    ["Booking/Reservation", "Travel", "Hospitality", "Appointments"],
-    ["Social/Community", "Forums", "Professional networks", "Dating"],
-    ["Task/Project Management", "Collaboration", "Workflow automation"],
-    ["Finance/Banking", "Investment", "Cryptocurrency", "Payments"],
-    ["Subscription/Membership", "Loyalty programs", "Digital content"],
-    ["Inventory/Catalog", "Warehouse management", "Asset tracking"],
-    ["Messaging/Communication", "Customer support", "Ticketing systems"],
-    ["Lists/Collections", "Bookmarks", "Curation", "Wishlists"],
-    ["Scheduling/Calendar", "Event management", "Resource booking"],
-    ["Forms/Surveys", "Feedback", "Applications", "Registrations"],
-    ["Healthcare/Medical", "Telehealth", "Patient portals", "Pharmacy"],
-    ["Education/Learning", "LMS", "Tutoring", "Course platforms"],
-    ["Real Estate/Property", "Rentals", "Property management"],
-    ["HR/Recruiting", "Job boards", "Applicant tracking", "Payroll"],
-    ["Legal/Compliance", "Contract management", "Document signing"],
-    ["Logistics/Shipping", "Fleet management", "Delivery tracking"],
-    ["Food/Restaurant", "Ordering", "Menu management", "Kitchen operations"],
-    ["Entertainment/Gaming", "Streaming", "Game platforms", "Virtual goods"],
-    ["IoT/Smart devices", "Home automation", "Device management"],
-    ["Fitness/Wellness", "Workout tracking", "Gym management", "Nutrition"],
-    ["Pet services", "Veterinary", "Pet sitting", "Pet supplies"],
-    ["Automotive", "Car dealership", "Service scheduling", "Parts inventory"],
-    ["Non-profit/Charity", "Donations", "Volunteer management", "Fundraising"],
-]
 
 
 SCENARIO_DIVERSITY_CHECK_SYSTEM_PROMPT = """あなたは Web サイト・アプリのシナリオの多様性を確認する担当者です。新しく生成されたシナリオのうち、既存のシナリオや互いに似すぎているものを見つけるのがあなたの仕事です。
@@ -652,32 +508,16 @@ SCENARIO_DIVERSITY_CHECK_USER_PROMPT_TEMPLATE = """## 既存のシナリオ(す�
 }}"""
 
 
-SCENARIO_CATEGORY_DIVERSITY_PROMPT = """次の Web サイト・アプリのシナリオの一覧を分析し、どのインタラクションパターンのカテゴリが不足しているかを特定してください。
+SCENARIO_CATEGORY_DIVERSITY_PROMPT = (
+    """次の Web サイト・アプリのシナリオの一覧を分析し、どのカテゴリが不足しているかを特定してください。
 
 現在のシナリオ:
 {scenarios}
 
-インタラクションパターンのカテゴリ:
-1. E-commerce/Marketplace
-2. Booking/Reservation
-3. Social/Community
-4. Task/Project Management
-5. Finance/Banking
-6. Subscription/Membership
-7. Inventory/Catalog
-8. Messaging/Communication
-9. Lists/Collections
-10. Scheduling/Calendar
-11. Forms/Surveys
-12. Settings/Configuration
-13. Healthcare/Medical
-14. Education/Learning
-15. Real Estate/Property
-16. HR/Recruiting
-17. Legal/Compliance
-18. Logistics/Shipping
-19. Food/Restaurant
-20. Entertainment/Gaming
+カテゴリ:
+"""
+    + _SCENARIO_CATEGORY_NAMES_TEXT
+    + """
 
 出力形式(JSON、Markdown のコードフェンスなし):
 {{
@@ -685,184 +525,4 @@ SCENARIO_CATEGORY_DIVERSITY_PROMPT = """次の Web サイト・アプリのシ�
     "underrepresented": ["category1", "category2", ...],
     "suggestions": ["X の種類のシナリオをもっと生成する", ...]
 }}"""
-
-
-VERIFIER_SQL_GENERATION_SYSTEM_PROMPT = """あなたは Python と SQL の専門家です。簡略化した API サーバー上でユーザータスクが正しく完了したかを検証するために、SQLite のクエリを使う Python コードを生成するのがあなたの仕事です。UTF-8 でエンコードされた文字列だけを出力し、絵文字や特殊文字は避けてください。reasoning などの説明文は日本語で書いてください。"""
-
-VERIFIER_SQL_GENERATION_USER_PROMPT = """ユーザータスクが完了したかを検証するために、与えられたデータベースから有用な情報を集める、sqlite3 のクエリを使った Python 関数を生成してください。Python 関数の生成に役立つよう、簡略化した API サーバーの環境名、検証するユーザータスク、データベーススキーマ、データベースの初期状態を与えます。
-
-簡略化した API サーバーの名前:
-{scenario_name}
-
-検証するユーザータスク:
-{user_task}
-
-データベースのダンプ(初期状態。エージェントが何か操作する前):
-{db_dump}
---------------------------------
-
-要件:
-1. initial_db_path と final_db_path を引数に取る、完全な Python 関数を生成すること。
-2. 関数は SQLite データベースに接続してクエリを実行し、別の LLM がタスクの完了を判定するのに役立つ情報を返すこと。
-3. sqlite3 の複雑なクエリの組み合わせや Python のロジックを使ってよい。関数は、タスクの完了を判定するのに役立つ情報を含む辞書を返さなければならない。
-4. Python 関数とクエリはデータベースのダンプに従うこと。新しいテーブルやカラムをでっち上げないこと。
-5. sqlite3 ライブラリを使い、ほかに必要なライブラリがあればインポートすること
-6. データベースの状態は 2 つ与えられる: 初期状態と、エージェントがタスクを実行した後の最終状態である。初期状態を最終状態との比較に使ってよい。
-7. データベースは決して変更してはならず、読み取りだけを行うこと。
-8. Python 関数が、JSON にシリアライズできる辞書を返せるようにすること。たとえば、辞書のキーにタプルを使わず、datetime などの JSON にシリアライズできないオブジェクトを使わないこと。使えるのは string、int、float、bool、list、dict だけである。
-9. 次を含む辞書を出力しなければならない:
-    - reasoning: この関数がタスクの成功・失敗の検証にどう役立つかの簡潔な説明。関数の実行結果に基づいて別の LLM が判定するための指針も含める。
-    - python_code: initial_db_path と final_db_path を引数に取る完全な Python 関数のコード(文字列)
-    - function_name: 関数の名前
-    - success_criteria: タスクが成功したことを示す、関数の戻り値の期待される内容の説明
-    - failure_criteria: タスクが失敗したことを示す、関数の戻り値の期待される内容の説明
-
-構造の例:
-```python
-def verify_task(initial_db_path: str, final_db_path: str) -> dict:
-    import sqlite3
-    import any other libraries the function needs
-
-    conn_initial = sqlite3.connect(initial_db_path)
-    conn_final = sqlite3.connect(final_db_path)
-
-    # complex logic here
-    # ...
-
-    conn_initial.close()
-    conn_final.close()
-
-    return {{
-        タスクが成功したか失敗したかを別の LLM が判定するのに役立つものであれば、価値のあるデータや情報を何でも返してよい。ただし、この辞書は JSON にシリアライズできるようにし、datetime や bytes など JSON にシリアライズできないオブジェクトは含めないこと。
-    }}
-```
-
-出力形式(有効な JSON でなければならない。Markdown のコードフェンスなし):
-{{
-    "reasoning": "この関数がタスクの成功・失敗の検証にどう使えるかの簡潔な説明",
-    "python_code": "initial_db_path と final_db_path を引数に取る完全な Python 関数のコード(文字列)",
-    "function_name": "verify_task",
-    "success_criteria": "タスクが成功したことを示す、関数の戻り値の期待される内容の説明",
-    "failure_criteria": "タスクが失敗したことを示す、関数の戻り値の期待される内容の説明"
-}}
-"""
-
-
-CODE_VERIFICATION_SYSTEM_PROMPT = """あなたは、データベースの検証とテストの自動化を専門とする Python 開発者です。AI エージェントが与えられたタスクを正しく完了したかを確実に判定できる、Python の検証コードを生成するのがあなたの仕事です。
-
-UTF-8 でエンコードされた文字列だけを出力し、絵文字や特殊文字は避けてください。reasoning などの説明文は日本語で書いてください。
-
-最重要の要件:
-1. 検証コードは 100% 決定的で、ルールに基づくものでなければならない。結果を判定できない場合は、{"result": "others"} を返すだけにすること。
-2. コードが {"result": "complete"} を返すのは、タスクが完了したと 100% 確信できる場合だけでなければならない
-3. それ以外のすべての場合(不確か、部分的な完了、エラー)は {"result": "others"} を返すこと
-4. コードは例外を出さずに、エッジケースを適切に扱うこと
-5. 防御的プログラミングを行うこと。入力は不正な形式だったり欠けていたりする可能性があるものとする"""
-
-CODE_VERIFICATION_USER_PROMPT = """AI エージェントがタスクを正しく完了したかを直接判定する、Python の検証関数を生成してください。この関数は、追加の LLM による判定がない強化学習で使われます。コードの出力が最終的な判定になります。
-
-## 環境の情報
-
-シナリオ名: {scenario}
-
-検証するユーザータスク:
-{task}
-
-データベースのダンプ(初期状態。エージェントが何か操作する前):
-{db_dump}
-
-## 関数のシグネチャ
-
-```python
-def verify_task_completion(initial_db_path: str, final_db_path: str, final_answer: str | None = None) -> dict:
-    \"\"\"
-    Verify if the agent successfully completed the task.
-
-    Args:
-        initial_db_path: Path to the database BEFORE agent execution
-        final_db_path: Path to the database AFTER agent execution
-        final_answer: The agent's final text response/summary (may be None)
-
-    Returns:
-        {{"result": "complete"}} if 100% certain task was completed successfully
-        {{"result": "others"}} for any other case (incomplete, uncertain, error, partial)
-    \"\"\"
-```
-
-## 検証の方針
-
-### 照会・読み取りのタスク(例: 「〜を探す」「〜を一覧する」「〜を取得する」「〜は何か」):
-- final_answer に、求められた情報が含まれているべきである
-- 正規表現のパターンで final_answer から重要な情報を取り出し、検証すること
-- 取り出したデータをデータベースの内容と突き合わせ、正確さを確かめること
-- 回答の形式が求められたものと一致しているかを確認すること
-
-### 変更のタスク(例: 「〜を追加する」「〜を作成する」「〜を更新する」「〜を削除する」):
-- initial_db と final_db を比べ、期待される変更を検出すること
-- 指定されたレコードが求められたとおりに作成・変更・削除されたかを確かめること
-- 変更がタスクの要件と正確に一致しているかを確認すること
-- データの整合性(正しい値、リレーションなど)を検証すること
-
-### 組み合わせのタスク(照会 + 操作):
-- データベースの変更と final_answer の内容の両方を検証すること
-- すべてのサブタスクが完了していることを確かめること
-
-## コードの要件
-
-1. 必要なライブラリはすべて関数の先頭でインポートすること
-2. データベースの操作には sqlite3 を使うこと
-3. final_answer の正規表現によるパターンマッチには re モジュールを使うこと
-4. final_answer が None や空の場合も適切に扱うこと
-5. try-except はデータベースの接続エラーにだけ使い、ロジックには使わないこと
-6. エッジケースを扱える堅牢なコードにすること
-7. {{"result": "complete"}} を返すのは、すべての条件が 100% 確実に満たされている場合だけにすること
-8. それ以外のあらゆる状況では {{"result": "others"}} を返すこと
-
-## 出力形式
-
-有効な JSON オブジェクトを出力しなければなりません(Markdown のコードフェンスなし):
-{{
-    "reasoning": "このタスクを検証するのにどのような確認が必要かの説明",
-    "verification_strategy": "query_based" | "modification_based" | "combined",
-    "key_checks": ["コードが行う具体的な確認の一覧"],
-    "python_code": "完全な Python 関数のコード(文字列)",
-    "function_name": "verify_task_completion"
-}}
-
-## コードの構造の例
-
-```python
-def verify_task_completion(initial_db_path: str, final_db_path: str, final_answer: str | None = None) -> dict:
-    import sqlite3
-    import re
-
-    # Helper to safely query database
-    def safe_query(db_path: str, query: str, params: tuple = ()) -> list:
-        try:
-            conn = sqlite3.connect(f"file:{{db_path}}?mode=ro", uri=True)
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            results = cursor.fetchall()
-            conn.close()
-            return results
-        except Exception:
-            return []
-
-    # For query tasks: validate final_answer contains expected info
-    # For modification tasks: compare database states
-    # For combined: do both
-
-    # Example check for modification task:
-    # initial_count = len(safe_query(initial_db_path, "SELECT * FROM orders WHERE user_id = ?", (1,)))
-    # final_count = len(safe_query(final_db_path, "SELECT * FROM orders WHERE user_id = ?", (1,)))
-    # if final_count > initial_count:
-    #     return {{"result": "complete"}}
-
-    # Example check for query task:
-    # if final_answer and re.search(r"price.*\\$[\\d.]+", final_answer, re.IGNORECASE):
-    #     return {{"result": "complete"}}
-
-    return {{"result": "others"}}
-```
-
-では、与えられたタスクの検証コードを生成してください。"""
+)

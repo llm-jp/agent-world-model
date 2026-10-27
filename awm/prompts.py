@@ -519,38 +519,6 @@ Output format (JSON only, no markdown):
 }}"""
 
 
-SCENARIO_CATEGORY_LIST = [
-    "E-commerce/Marketplace",
-    "Booking/Reservation",
-    "Social/Community",
-    "Task/Project Management",
-    "Finance/Banking",
-    "Subscription/Membership",
-    "Inventory/Catalog",
-    "Messaging/Communication",
-    "Lists/Collections",
-    "Scheduling/Calendar",
-    "Forms/Surveys",
-    "Settings/Configuration",
-    "Healthcare/Medical",
-    "Education/Learning",
-    "Real Estate/Property",
-    "HR/Recruiting",
-    "Legal/Compliance",
-    "Logistics/Shipping",
-    "Food/Restaurant",
-    "Entertainment/Gaming",
-    "Fitness/Wellness",
-    "Travel/Hospitality",
-    "Automotive",
-    "IoT/Smart Devices",
-    "Developer Tools",
-    "CRM/Sales",
-    "Content Management",
-    "Analytics/Reporting",
-]
-
-
 SCENARIO_GENERATION_SYSTEM_PROMPT = """You are an expert at identifying websites, apps, and digital platforms that are HIGHLY SUITABLE for API environment simulation and database-driven interactions.
 
 ## KEY PRINCIPLE: Can the data be SYNTHESIZED?
@@ -974,7 +942,8 @@ if os.environ.get("AWM_SYN_LANG", "en") == "ja":
         SAMPLE_DATA_GENERATION_SYSTEM_PROMPT,
         SAMPLE_DATA_GENERATION_USER_PROMPT,
         SCENARIO_CATEGORY_DIVERSITY_PROMPT,
-        SCENARIO_CATEGORY_LIST,
+        SCENARIO_CLASSIFICATION_SYSTEM_PROMPT,
+        SCENARIO_CLASSIFICATION_USER_PROMPT_TEMPLATE,
         SCENARIO_DIVERSITY_CHECK_SYSTEM_PROMPT,
         SCENARIO_DIVERSITY_CHECK_USER_PROMPT_TEMPLATE,
         SCENARIO_FOCUS_CATEGORIES,

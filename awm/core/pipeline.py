@@ -64,7 +64,13 @@ def run(config: Config):
     sample_output = f"{d}/gen_sample.jsonl"
     spec_output = f"{d}/gen_spec.jsonl"
     env_output = f"{d}/gen_envs.jsonl"
-    verifier_output = f"{d}/gen_verifier.jsonl"
+    # code verifiers use the file name that `awm verify --mode code` reads by default,
+    # so both modes can share one output directory without mixing
+    verifier_output = (
+        f"{d}/gen_verifier.pure_code.jsonl"
+        if config.verifier_mode == VerificationMode.code
+        else f"{d}/gen_verifier.jsonl"
+    )
     database_dir = f"{d}/databases"
 
     # Step 1: Scenario Generation

@@ -101,7 +101,7 @@ mkdir -p logs
 # build both environments: `uv sync` and `uv sync --project serve`
 sbatch scripts/install.sh
 # start the generation and embedding vLLM servers, then run `awm gen all`
-# options: -d (sample run) -r (resume) -m model -l ja|en -s seed_file, see `bash scripts/run_gen.sh -h`
+# options: -d (sample run) -r (resume) -m model -l ja|en -s seed_file -v sql|code (verifier mode), see `bash scripts/run_gen.sh -h`
 sbatch scripts/run_gen.sh -d
 ```
 

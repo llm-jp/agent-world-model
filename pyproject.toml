@@ -27,6 +27,12 @@ bench = [
     "mcp-adapted-bench",
 ]
 
+[tool.uv]
+# use only uv-installed interpreters; UV_PYTHON_INSTALL_DIR decides where they live
+python-preference = "only-managed"
+# precompile .pyc so that processes do not compile on import from Lustre
+compile-bytecode = true
+
 [tool.uv.sources]
 mcp-adapted-bench = { path = "mcp-adapted-bench", editable = true }
 

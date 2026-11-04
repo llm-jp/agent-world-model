@@ -5,3 +5,6 @@
 /outputs/seed_python_stdlib.jsonl
 /outputs/Qwen_Qwen3.8-Flash-Next-FP8_ja/
 /notebooks/
+/.python/
+/logs/
+/.tmp/

@@ -33,6 +33,10 @@ class GenCmd(Enum):
     env = "env"
     # Generate verification code for tasks
     verifier = "verifier"
+    # Solve the original tasks once and keep graded runs and tool lists for augmentation
+    reference = "reference"
+    # Append augmented tasks and their verifiers to the task and verifier files
+    aug = "aug"
     # Run the full synthesis pipeline
     all = "all"
 
@@ -50,10 +54,12 @@ class EnvCmd(Enum):
 
 def _build_commands() -> dict:
     from awm.core.agent import Config as AgentConfig
+    from awm.core.augment import Config as AugmentConfig
     from awm.core.check import Config as CheckServerConfig
     from awm.core.db import Config as DbConfig
     from awm.core.env import Config as EnvConfig
     from awm.core.pipeline import Config as PipelineConfig
+    from awm.core.reference import Config as ReferenceConfig
     from awm.core.reset import Config as ResetConfig
     from awm.core.sample import Config as SampleConfig
     from awm.core.scenario import Config as ScenarioConfig
@@ -78,6 +84,8 @@ def _build_commands() -> dict:
             GenCmd.spec: SpecConfig,
             GenCmd.env: EnvConfig,
             GenCmd.verifier: VerifierConfig,
+            GenCmd.reference: ReferenceConfig,
+            GenCmd.aug: AugmentConfig,
             GenCmd.all: PipelineConfig,
         },
         TopCmd.env: {
@@ -101,6 +109,8 @@ DISPATCH = {
     (TopCmd.gen, GenCmd.spec): "awm.core.spec",
     (TopCmd.gen, GenCmd.env): "awm.core.env",
     (TopCmd.gen, GenCmd.verifier): "awm.core.verifier",
+    (TopCmd.gen, GenCmd.reference): "awm.core.reference",
+    (TopCmd.gen, GenCmd.aug): "awm.core.augment",
     (TopCmd.gen, GenCmd.all): "awm.core.pipeline",
     (TopCmd.env, EnvCmd.start): "awm.core.server",
     (TopCmd.env, EnvCmd.check): "awm.core.check",

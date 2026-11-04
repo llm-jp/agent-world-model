@@ -934,11 +934,98 @@ def verify_task_completion(initial_db_path: str, final_db_path: str, final_answe
 Now generate the verification code for the given task."""
 
 
+# Task augmentation: rewrites of a task that keep or deliberately remove information.
+AUG_TASK_REWRITE_SYSTEM_PROMPT = """You rewrite user requests given to an AI agent that completes tasks by calling tools. Follow the instructions exactly and return only a valid JSON object, without markdown fences or commentary."""
+
+AUG_TASK_PARAPHRASE_PROMPT = """Rewrite the following user request with different wording and sentence structure while keeping its meaning exactly the same.
+
+Request: {task}
+
+Requirements:
+1. The agent must have to do exactly the same things as for the original request
+2. Keep every one of these values verbatim in the rewritten request: {keep_values}
+3. Do not add, remove or change any condition, target or value
+4. Write in the same language as the original request
+
+Return {{"task": "<rewritten request>"}}"""
+
+AUG_TASK_AMBIGUOUS_PROMPT = """Rewrite the following user request so that it is phrased more vaguely and casually, the way a busy user might write it, while the goal stays the same.
+
+Request: {task}
+
+Requirements:
+1. Make the wording indirect or loose (e.g. casual tone, implied intent, less structured sentences)
+2. Keep every one of these values verbatim, because the agent needs them: {keep_values}
+3. The agent must still be able to complete exactly the same task without asking anything
+4. Write in the same language as the original request
+
+Return {{"task": "<rewritten request>"}}"""
+
+AUG_TASK_NO_TOOL_NAMES_PROMPT = """Rewrite the following user request so that it does not mention any tool or API name, and describes what the user wants in everyday words instead.
+
+Request: {task}
+
+Tool names that must not appear in any form (including with spaces, other casing or translated): {tool_names}
+
+Requirements:
+1. Keep the meaning exactly the same
+2. Keep every one of these values verbatim: {keep_values}
+3. Write in the same language as the original request
+
+Return {{"task": "<rewritten request>"}}"""
+
+AUG_TASK_DISTRACTOR_NAMES_PROMPT = """Rewrite the following user request so that it naturally mentions the given tool names, without asking the agent to use them.
+
+Request: {task}
+
+Tool names to mention (the agent does not need them for this request): {distractor_names}
+
+Requirements:
+1. Mention each tool name verbatim, e.g. as background ("I already checked with X") or as something the user does not want
+2. What the agent has to do must stay exactly the same
+3. Keep every one of these values verbatim: {keep_values}
+4. Write in the same language as the original request
+
+Return {{"task": "<rewritten request>"}}"""
+
+AUG_MISS_PARAM_PROMPT = """The following user request contains the value "{value}", which the agent passes as the parameter "{param}" of the tool "{tool_name}".
+
+Request: {task}
+
+1. Rewrite the request so that this value is missing and cannot be inferred from the request, while everything else stays the same. The rewritten request must read naturally, as if the user forgot to mention it
+2. Write a short follow-up message in which the user provides the value "{value}" verbatim, as an answer to the agent asking for it
+3. Write both in the same language as the original request
+
+Return {{"task": "<rewritten request>", "followup": "<follow-up message>"}}"""
+
+AUG_MISS_FUNC_FOLLOWUP = (
+    "The tool {tool_name} is now available. Please continue with my request."
+)
+
+# Tool definitions are part of the environment, so this prompt stays in English.
+AUG_TOOL_DOC_PARAPHRASE_PROMPT = """Rewrite the descriptions of the following tools and their parameters with different wording while keeping their meaning exactly the same.
+
+Tools (JSON): {tools_json}
+
+Requirements:
+1. Keep each description's meaning, constraints, formats and allowed values unchanged
+2. Keep the language of each description
+3. Return exactly the same tool and parameter keys; only the description texts change
+
+Return {{"tools": {{"<tool name>": {{"description": "<rewritten>", "parameters": {{"<param name>": "<rewritten>"}}}}}}}}"""
+
 # Japanese replaces only the prompts whose output is natural language seen in the
 # data (scenarios, tasks, sample data); schema, API, server and verifier
 # generation stay in English, with API generation told to accept Japanese arguments.
 if os.environ.get("AWM_SYN_LANG", "en") == "ja":
     from awm.prompts_ja import (  # noqa: F401
+        AUG_MISS_FUNC_FOLLOWUP,
+        AUG_MISS_PARAM_PROMPT,
+        AUG_TASK_AMBIGUOUS_PROMPT,
+        AUG_TASK_DISTRACTOR_NAMES_PROMPT,
+        AUG_TASK_NO_TOOL_NAMES_PROMPT,
+        AUG_TASK_PARAPHRASE_PROMPT,
+        AUG_TASK_REWRITE_SYSTEM_PROMPT,
         SAMPLE_DATA_GENERATION_SYSTEM_PROMPT,
         SAMPLE_DATA_GENERATION_USER_PROMPT,
         SCENARIO_CATEGORY_DIVERSITY_PROMPT,

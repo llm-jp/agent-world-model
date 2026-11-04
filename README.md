@@ -267,6 +267,44 @@ awm agent \
 awm verify --input outputs/agents/<timestamp> --mode sql
 ```
 
+### Task Augmentation
+Augmented tasks are appended to each scenario's `tasks` in `gen_tasks.jsonl`, with their settings in a parallel `task_meta` list (`null` for original tasks), and their code-mode verifiers are appended to `gen_verifier.pure_code.jsonl` under the same `(scenario, task_idx)`. Readers that only use `tasks` keep working; `awm agent` and `awm verify` apply `task_meta`.
+
+Each augmentation is an independent part (`awm/core/augment/`). A recipe chains parts with `+` and applies them in order, e.g. `tool_rename+task_paraphrase+miss_param`; a single part name is a recipe of its own.
+
+| Part | What changes | Reward |
+|------|--------------|--------|
+| `tool_rename`, `param_rename`, `shuffle`, `add_params`, `drop_optional_params`, `distractor_tools` | how the tools are presented to the agent (calls are mapped back to the server) | original verifier |
+| `tool_doc_paraphrase` | tool and parameter descriptions, rewritten by the LLM | original verifier |
+| `task_paraphrase`, `task_ambiguous`, `task_no_tool_names`, `task_distractor_names` | task wording, rewritten by the LLM | original verifier |
+| `miss_func` | the tool that completes the task is hidden until a scripted follow-up turn | no database change and no call of the hidden tool in the first turn, then the original verifier |
+| `miss_param` | a value the task needs is removed and given in a scripted follow-up turn | no database change and no call passing that parameter in the first turn, then the original verifier |
+
+When parts are combined, later rewrites must keep what earlier parts set up (removed values stay removed, added tool names stay mentioned, banned tool names stay absent), and all follow-up messages go into a single follow-up turn.
+
+```bash
+# solve the original tasks once: graded runs (gen_reference.jsonl) and tool lists (gen_tools.jsonl)
+awm gen reference \
+    --input_task outputs/gen_tasks.jsonl \
+    --input_verifier outputs/gen_verifier.pure_code.jsonl \
+    --output outputs/gen_reference.jsonl \
+    --output_tools outputs/gen_tools.jsonl
+
+# append augmented tasks and verifiers (in place, the first run keeps a .bak); reruns replace them
+awm gen aug \
+    --input_task outputs/gen_tasks.jsonl \
+    --input_verifier outputs/gen_verifier.pure_code.jsonl \
+    --input_reference outputs/gen_reference.jsonl \
+    --input_tools outputs/gen_tools.jsonl \
+    --recipes "shuffle,task_paraphrase,tool_rename+task_paraphrase+miss_param" \
+    --num_per_recipe 2
+
+# on Slurm, both stages with a vLLM server; -n 20 is a sample run written to <dir>/debug_aug/
+sbatch scripts/run_gen_aug.sh -o outputs/<dir> -r "shuffle,tool_rename+miss_func" -n 20
+```
+
+Rerunning the task stage (`awm gen task`) overwrites `gen_tasks.jsonl` and drops the augmented tasks, so rerun `awm gen aug` afterwards.
+
 ## Benchmark
 To align the evaluation with the trained tool-use protocol that requires agents to finish the task via unified MCP interface: `list_tools` and `call_tool`, we modified and adapated the evaluation harness of the following benchmarks: BFCLv3, τ²-bench-verified, and MCP-Universe. See more details at [mcp-adapted-bench](https://github.com/Raibows/mcp-adapted-bench). Remember to set the aforementioned env vars for the LLM agent API config before running the evaluation.
 

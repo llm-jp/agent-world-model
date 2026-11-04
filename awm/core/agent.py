@@ -29,6 +29,7 @@ from awm.core.server import (
     _prepare_database,
     start_server_process,
 )
+from awm.core.tool_view import PresentedTools, TaskMeta, ToolCallRejected
 from awm.tools import (
     async_wait_for_server,
     find_scenario_entry,
@@ -418,6 +419,8 @@ async def run_agent(config: Config):
     # Resolve scenario/task
     scenario = config.scenario
     task_id = config.task_id
+    # settings of an augmented task (tool view, scripted follow-up turns)
+    task_meta: TaskMeta | None = None
 
     if config.task:
         task = config.task
@@ -433,6 +436,9 @@ async def run_agent(config: Config):
                 f"task_id {task_id} out of range (0-{len(tasks) - 1}) for scenario {scenario}"
             )
         task = tasks[task_id]
+        metas = entry.get("task_meta") or []
+        if task_id < len(metas) and metas[task_id] is not None:
+            task_meta = TaskMeta.model_validate(metas[task_id])
         logger.info(
             f"Resolved task from scenario={scenario}, task_id={task_id}: {task}"
         )
@@ -519,7 +525,14 @@ async def run_agent(config: Config):
         logger.info("Connecting to MCP server and fetching tools...")
         tools = await mcp.list_tools()
         logger.info(f"Loaded {len(tools)} tools from MCP server")
-        tools_response_text = format_tools_for_response(tools)
+        tools_json_save(tools, os.path.join(output_dir, "tools.json"))
+        presented = PresentedTools(tools, task_meta.tool_view if task_meta else None)
+        tools_response_text = format_tools_for_response(presented.tools)
+
+        pending_turns = list(task_meta.turns) if task_meta else []
+        turn = 0
+        turn_dbs: list[str] = []
+        tool_call_log: list[dict] = []
 
         messages: list[dict] = [
             {"role": "system", "content": get_system_prompt()},
@@ -547,6 +560,33 @@ async def run_agent(config: Config):
                 logger.info(f"Tool calls: {len(tool_calls)}")
 
             messages.append({"role": "assistant", "content": content})
+
+            # no tool calls -> the turn ends; scripted follow-ups continue the dialogue
+            if not tool_calls and pending_turns:
+                trajectory.append(
+                    {
+                        "iteration": iteration,
+                        "role": "assistant",
+                        "content": content,
+                        "tool_calls": [],
+                        "turn": turn,
+                    }
+                )
+                if db_file_path and os.path.exists(db_file_path):
+                    turn_db = f"turn_{turn}.db"
+                    shutil.copy2(db_file_path, os.path.join(output_dir, turn_db))
+                    turn_dbs.append(turn_db)
+                next_turn = pending_turns.pop(0)
+                turn += 1
+                if next_turn.tool_view is not None:
+                    presented = PresentedTools(tools, next_turn.tool_view)
+                    tools_response_text = format_tools_for_response(presented.tools)
+                logger.info(f"Turn {turn} user message: {next_turn.user}")
+                messages.append({"role": "user", "content": next_turn.user})
+                trajectory.append(
+                    {"role": "user", "content": next_turn.user, "turn": turn}
+                )
+                continue
 
             # no tool calls -> task complete
             if not tool_calls:
@@ -588,7 +628,27 @@ async def run_agent(config: Config):
                     f"Executing: call_tool({tool_name}, {json.dumps(tool_args, ensure_ascii=False)[:200]})"
                 )
                 try:
-                    response_text = await mcp.call_tool(tool_name, tool_args)
+                    server_name, server_args = presented.resolve(tool_name, tool_args)
+                    tool_call_log.append(
+                        {
+                            "turn": turn,
+                            "tool_name": server_name,
+                            "presented_name": tool_name,
+                            "arguments": server_args,
+                        }
+                    )
+                    response_text = await mcp.call_tool(server_name, server_args)
+                except ToolCallRejected as e:
+                    tool_call_log.append(
+                        {
+                            "turn": turn,
+                            "tool_name": tool_name,
+                            "presented_name": tool_name,
+                            "arguments": tool_args,
+                            "rejected": True,
+                        }
+                    )
+                    response_text = f"Error: {e}"
                 except TimeoutError:
                     response_text = f"Error: Tool call timed out after {mcp.timeout}s"
                     logger.error(response_text)
@@ -647,6 +707,9 @@ async def run_agent(config: Config):
             "timestamp": timestamp,
             "trajectory": trajectory,
             "messages": messages,
+            "task_meta": task_meta.model_dump() if task_meta else None,
+            "tool_calls": tool_call_log,
+            "turn_dbs": turn_dbs,
         }
         trajectory_path = os.path.join(output_dir, "trajectory.json")
         tools_json_save(trajectory_data, trajectory_path)

@@ -82,8 +82,19 @@ class Config:
                 )
 
 
-def _call_verifier_func(verify_func, initial_db_path, final_db_path, final_answer=None):
-    """Call a verifier function with signature-aware argument passing."""
+def _call_verifier_func(
+    verify_func,
+    initial_db_path,
+    final_db_path,
+    final_answer=None,
+    turn_db_paths=None,
+    tool_calls=None,
+):
+    """Call a verifier function with signature-aware argument passing.
+
+    turn_db_paths and tool_calls are passed only to verifiers that declare
+    them, i.e. those of multi-turn augmented tasks.
+    """
     sig = inspect.signature(verify_func)
     params = sig.parameters
 
@@ -94,6 +105,10 @@ def _call_verifier_func(verify_func, initial_db_path, final_db_path, final_answe
         kwargs["final_db_path"] = final_db_path
     if "final_answer" in params:
         kwargs["final_answer"] = final_answer or ""
+    if "turn_db_paths" in params:
+        kwargs["turn_db_paths"] = list(turn_db_paths or [])
+    if "tool_calls" in params:
+        kwargs["tool_calls"] = list(tool_calls or [])
 
     if not kwargs and len(params) >= 2:
         args = [initial_db_path, final_db_path]
@@ -161,7 +176,13 @@ def execute_sql_verifier(verifier_code, function_name, initial_db_path, final_db
 
 
 def execute_code_verifier(
-    verifier_code, function_name, initial_db_path, final_db_path, final_answer=None
+    verifier_code,
+    function_name,
+    initial_db_path,
+    final_db_path,
+    final_answer=None,
+    turn_db_paths=None,
+    tool_calls=None,
 ):
     """Execute code-mode verifier that returns {"result": "complete"|"others"}."""
     if not os.path.exists(initial_db_path):
@@ -204,7 +225,12 @@ def execute_code_verifier(
             }
 
         result = _call_verifier_func(
-            verify_func, initial_db_path, final_db_path, final_answer
+            verify_func,
+            initial_db_path,
+            final_db_path,
+            final_answer,
+            turn_db_paths,
+            tool_calls,
         )
 
         if not isinstance(result, dict) or "result" not in result:
@@ -238,8 +264,23 @@ def execute_code_verifier(
                 pass
 
 
+def find_verifier_function_name(code: str, verifier_mode: str) -> str:
+    """Name of the first `def verify_*` in the code, or the mode's default name."""
+    for line in code.split("\n"):
+        line = line.strip()
+        if line.startswith("def verify_") and "(" in line:
+            return line.split("(")[0].replace("def ", "").strip()
+    return "verify_task_completion" if verifier_mode == "code" else "verify_task"
+
+
 def run_verifier(
-    verifier_entry, verifier_mode, initial_db_path, final_db_path, final_answer=None
+    verifier_entry,
+    verifier_mode,
+    initial_db_path,
+    final_db_path,
+    final_answer=None,
+    turn_db_paths=None,
+    tool_calls=None,
 ):
     """Run the appropriate verifier and return (reward_type, details)."""
     verification = verifier_entry.get("verification", {})
@@ -248,19 +289,17 @@ def run_verifier(
     if not code or not isinstance(code, str) or len(code.strip()) < 10:
         return "judge_error", {"error": "No valid verifier code found"}
 
-    default_func = (
-        "verify_task_completion" if verifier_mode == "code" else "verify_task"
-    )
-    func_name = default_func
-    for line in code.split("\n"):
-        line = line.strip()
-        if line.startswith("def verify_") and "(" in line:
-            func_name = line.split("(")[0].replace("def ", "").strip()
-            break
+    func_name = find_verifier_function_name(code, verifier_mode)
 
     if verifier_mode == "code":
         result = execute_code_verifier(
-            code, func_name, initial_db_path, final_db_path, final_answer
+            code,
+            func_name,
+            initial_db_path,
+            final_db_path,
+            final_answer,
+            turn_db_paths,
+            tool_calls,
         )
         if result.get("execution_status") == "error":
             return "judge_error", result
@@ -459,9 +498,21 @@ async def run_verify(config: Config):
             final_answer = msg.get("content", "")
             break
 
+    # multi-turn runs keep a database snapshot at the end of each non-final turn
+    turn_db_paths = [
+        os.path.join(run_dir, name) for name in trajectory_data.get("turn_dbs", [])
+    ]
+    tool_calls = trajectory_data.get("tool_calls", [])
+
     # Run verifier
     reward_type, verify_result = run_verifier(
-        verifier_entry, mode, initial_db_path, final_db_path, final_answer
+        verifier_entry,
+        mode,
+        initial_db_path,
+        final_db_path,
+        final_answer,
+        turn_db_paths,
+        tool_calls,
     )
 
     logger.info(f"Verifier result: reward_type={reward_type}")

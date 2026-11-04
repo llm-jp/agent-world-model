@@ -43,6 +43,7 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "marimo>=0.25.2",
+    "pytest>=9.0.3",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -1,7 +1,6 @@
+import logging
 import os
 from dataclasses import dataclass
-
-from loguru import logger
 
 from awm.core.db import Config as DbConfig
 from awm.core.db import run as run_db
@@ -24,6 +23,8 @@ from awm.core.verifier import (
 from awm.core.verifier import (
     run as run_verifier,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -168,15 +169,15 @@ def run(config: Config):
     verifier_config.pre_process()
     run_verifier(verifier_config)
 
-    logger.success("\n" + "=" * 80)
-    logger.success("Full pipeline complete!")
-    logger.success(f"Output directory: {d}")
-    logger.success(f"  Scenarios:     {scenario_output}")
-    logger.success(f"  Tasks:         {task_output}")
-    logger.success(f"  DB Schemas:    {db_output}")
-    logger.success(f"  Sample Data:   {sample_output}")
-    logger.success(f"  API Specs:     {spec_output}")
-    logger.success(f"  Environments:  {env_output}")
-    logger.success(f"  Verifiers:     {verifier_output}")
-    logger.success(f"  Databases:     {database_dir}/")
-    logger.success("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("Full pipeline complete!")
+    logger.info(f"Output directory: {d}")
+    logger.info(f"  Scenarios:     {scenario_output}")
+    logger.info(f"  Tasks:         {task_output}")
+    logger.info(f"  DB Schemas:    {db_output}")
+    logger.info(f"  Sample Data:   {sample_output}")
+    logger.info(f"  API Specs:     {spec_output}")
+    logger.info(f"  Environments:  {env_output}")
+    logger.info(f"  Verifiers:     {verifier_output}")
+    logger.info(f"  Databases:     {database_dir}/")
+    logger.info("=" * 80)

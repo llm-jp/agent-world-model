@@ -1,9 +1,8 @@
 """Apply recipes (sequences of parts) to source tasks and merge the results into the dataset."""
 
+import logging
 import random
 from collections.abc import Callable
-
-from loguru import logger
 
 from awm.core.augment.draft import Draft, LLMStep, Part, Variant, finalize
 from awm.core.augment.followup_parts import MissFunc, MissParam
@@ -24,6 +23,8 @@ from awm.core.augment.tool_parts import (
 )
 from awm.core.tool_view import TaskMeta
 from awm.tools import normalize_scenario_name
+
+logger = logging.getLogger(__name__)
 
 PARTS: dict[str, Part] = {
     part.name: part

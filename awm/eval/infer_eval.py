@@ -4,11 +4,11 @@ This is a minimal bridge around `mcp-adapted-bench`: https://github.com/Raibows/
 """
 
 import asyncio
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from loguru import logger
 from simpleArgParser import parse_args
 
 _HERE = Path(__file__).resolve()
@@ -34,13 +34,15 @@ from mcp_adapted_bench.common.llm_client import (
 from mcp_adapted_bench.mcp_universe.runner import run_mcp_universe_evaluation
 from mcp_adapted_bench.tau2.runner import run_tau2_evaluation
 
+from awm.log import setup_logging
 from awm.tools import (
     tools_json_save,
     tools_robust_json_loads,
 )
 
-logger.remove()
-logger.add(sys.stdout, level="INFO")
+logger = logging.getLogger(__name__)
+
+setup_logging(logging.INFO, sys.stdout)
 
 
 def _read_completed_task_ids(output_dir: Path) -> set[str]:

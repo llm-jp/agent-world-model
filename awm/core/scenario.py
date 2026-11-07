@@ -1,10 +1,10 @@
+import logging
 import os
 import random
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
-from loguru import logger
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from tqdm import tqdm
@@ -22,6 +22,8 @@ from awm.prompts import (
     SCENARIO_GENERATION_USER_PROMPT_TEMPLATE,
 )
 from awm.tools import tools_jsonl_load, tools_jsonl_save, tools_robust_json_loads
+
+logger = logging.getLogger(__name__)
 
 
 class GeneratedScenario(BaseModel):
@@ -223,9 +225,7 @@ class ScenarioSelfInstruct:
             1 for s in all_classified if s.get("suitability_level") == "medium"
         )
         low = sum(1 for s in all_classified if s.get("suitability_level") == "low")
-        logger.success(
-            f"Classification complete: High={high}, Medium={medium}, Low={low}"
-        )
+        logger.info(f"Classification complete: High={high}, Medium={medium}, Low={low}")
 
         return all_classified
 
@@ -300,7 +300,7 @@ class ScenarioSelfInstruct:
             f"Computing embeddings for {len(all_scenarios)} existing scenarios..."
         )
         self.embeddings = self.compute_embeddings(all_scenarios)
-        logger.success(f"Initialized embedding matrix: {self.embeddings.shape}")
+        logger.info(f"Initialized embedding matrix: {self.embeddings.shape}")
 
         self._update_category_counts(all_scenarios)
 
@@ -638,7 +638,7 @@ class ScenarioSelfInstruct:
                     seen_names.add(name_lower)
                     all_valid.append(item)
 
-        logger.success(
+        logger.info(
             f"Generated {len(all_valid)} unique valid scenarios from {num_requests} parallel requests"
         )
 
@@ -773,14 +773,14 @@ class ScenarioSelfInstruct:
             self.existing_scenarios = self.classify_scenarios(self.existing_scenarios)
 
             tools_jsonl_save(self.existing_scenarios, self.args.input_path)
-            logger.success(f"Saved classified scenarios to {self.args.input_path}")
+            logger.info(f"Saved classified scenarios to {self.args.input_path}")
         elif self.args.resume:
             logger.info("Resume mode: skipping classification step (already done)")
 
         self.filter_by_suitability()
 
         if self.args.classify_only:
-            logger.success("Classification complete (--classify_only mode)")
+            logger.info("Classification complete (--classify_only mode)")
             self._print_suitability_report()
             return
 
@@ -921,22 +921,22 @@ class ScenarioSelfInstruct:
 
         self.save_progress()
 
-        logger.success(f"\n{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
         if current_count >= target:
-            logger.success("Self-instruct complete!")
+            logger.info("Self-instruct complete!")
         else:
             logger.warning("Self-instruct stopped early (reached iteration limit)")
-        logger.success(f"Original: {len(self.existing_scenarios)}")
-        logger.success(f"Generated: {len(self.generated_scenarios)}")
-        logger.success(
+        logger.info(f"Original: {len(self.existing_scenarios)}")
+        logger.info(f"Generated: {len(self.generated_scenarios)}")
+        logger.info(
             f"Total: {len(self.existing_scenarios) + len(self.generated_scenarios)}"
         )
-        logger.success(f"Target: {target}")
-        logger.success(f"Iterations: {iteration}")
-        logger.success(f"Output: {self.args.output_path}")
+        logger.info(f"Target: {target}")
+        logger.info(f"Iterations: {iteration}")
+        logger.info(f"Output: {self.args.output_path}")
         if isinstance(final_stats.get("mean_similarity"), float):
-            logger.success(f"Mean similarity: {final_stats['mean_similarity']:.3f}")
-        logger.success(f"{'=' * 60}")
+            logger.info(f"Mean similarity: {final_stats['mean_similarity']:.3f}")
+        logger.info(f"{'=' * 60}")
 
     def _print_suitability_report(self):
         logger.info("\n" + "=" * 60)

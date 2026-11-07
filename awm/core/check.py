@@ -1,10 +1,11 @@
 import asyncio
+import logging
 import sys
 from dataclasses import dataclass
 
-from loguru import logger
-
 from awm.tools import check_mcp_server
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,7 +25,7 @@ def run(config: Config):
         for tool in tools:
             logger.info(f"  - {tool['name']}: {tool.get('description', '')}")
 
-        logger.success(f"Server is running at {config.url}")
+        logger.info(f"Server is running at {config.url}")
         logger.info(f"Tools count: {tools_count}")
     else:
         logger.error(f"Server check failed at {config.url}: {error}")

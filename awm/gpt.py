@@ -1,14 +1,16 @@
 import asyncio
 import concurrent.futures
 import json
+import logging
 import os
 import time
 from typing import Any
 
-from loguru import logger
 from openai import AsyncAzureOpenAI, AsyncOpenAI, BadRequestError, InternalServerError
 from openai.types.chat import ChatCompletion
 from tqdm.asyncio import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 class ChatCompletionFallback(dict):

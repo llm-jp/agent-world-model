@@ -1,9 +1,8 @@
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-
-from loguru import logger
 
 from awm.core.db import create_sqlite_database
 from awm.gpt import GPTClient
@@ -19,6 +18,8 @@ from awm.tools import (
     tools_robust_json_loads,
     tools_token_count,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -284,7 +285,7 @@ def generate_and_insert_sample_data(args: Config):
                         results.append(result)
                         total_successful += successful
                         total_failed += failed
-                        logger.success(
+                        logger.info(
                             f"{scenario_name}: Successfully processed with {error_ratio:.2%} error rate"
                         )
                         continue
@@ -350,8 +351,8 @@ def generate_and_insert_sample_data(args: Config):
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     tools_jsonl_save(results, args.output)
 
-    logger.success(f"\n{'=' * 100}")
-    logger.success("Sample data generation complete!")
+    logger.info(f"\n{'=' * 100}")
+    logger.info("Sample data generation complete!")
     logger.info(f"Scenarios processed: {len(results)}/{len(tasks_data)}")
     logger.info(f"Total INSERT statements executed: {total_successful}")
 

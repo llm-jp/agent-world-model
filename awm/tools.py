@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import random
 import re
@@ -12,10 +13,11 @@ from typing import Any
 import json_repair
 import orjson
 from json_repair import repair_json
-from loguru import logger
 from mcp import Client
 from mcp.types import CallToolResult, Tool
 from tiktoken import encoding_for_model
+
+logger = logging.getLogger(__name__)
 
 
 def dump_sqlite_to_string(db_path: str) -> str:

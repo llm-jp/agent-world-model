@@ -1,12 +1,13 @@
+import logging
 import os
 import random
 from dataclasses import dataclass
 
-from loguru import logger
-
 from awm.gpt import GPTClient
 from awm.prompts import TASK_GENERATION_SYSTEM_PROMPT, TASK_GENERATION_USER_PROMPT
 from awm.tools import tools_jsonl_load, tools_jsonl_save, tools_robust_json_loads
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -108,7 +109,7 @@ def generate_all_tasks(args: Config, scenarios: list[dict]):
                                 "tasks": task_list[: args.num_tasks],
                             }
                         )
-                        logger.success(
+                        logger.info(
                             f"✓ {scenario['name']}: {len(task_list)} tasks generated"
                         )
 

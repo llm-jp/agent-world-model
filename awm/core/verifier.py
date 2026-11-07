@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sqlite3
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -6,7 +7,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from loguru import logger
 from tqdm import tqdm
 
 from awm.gpt import GPTClient
@@ -23,6 +23,8 @@ from awm.tools import (
     tools_jsonl_save,
     tools_robust_json_loads,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class VerificationMode(Enum):

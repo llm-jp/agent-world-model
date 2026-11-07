@@ -1,13 +1,15 @@
+import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 
-from loguru import logger
 from tqdm import tqdm
 
 from awm.core.db import create_sqlite_database
 from awm.core.sample import execute_sample_data
 from awm.tools import find_scenario_entry, normalize_scenario_name, tools_jsonl_load
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

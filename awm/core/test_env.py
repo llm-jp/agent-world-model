@@ -1,10 +1,11 @@
+import logging
 import os
 from dataclasses import dataclass
 
-from loguru import logger
-
 from awm.core.env import batch_test_environments
 from awm.tools import normalize_scenario_name, tools_jsonl_load
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,7 +55,7 @@ def run(config: Config):
             failed.append((scenario_name, output))
 
     for name in passed:
-        logger.success(f"PASSED: {name}")
+        logger.info(f"PASSED: {name}")
 
     logger.info(f"\n{'=' * 100}\n\n")
 

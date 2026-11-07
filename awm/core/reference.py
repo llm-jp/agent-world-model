@@ -8,16 +8,17 @@ code-mode verifier and stores the tool calls, plus the tool list per scenario.
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
-
-from loguru import logger
 
 from awm.core.agent import Config as AgentConfig
 from awm.core.agent import run_agent
 from awm.core.verify import Config as VerifyConfig
 from awm.core.verify import VerificationMode, run_verify
 from awm.tools import normalize_scenario_name, tools_jsonl_load, tools_jsonl_save
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -190,7 +191,7 @@ async def run_all(config: Config) -> None:
 
     rows = tools_jsonl_load(config.output) if os.path.exists(config.output) else []
     complete = sum(1 for r in rows if r.get("result") == "complete")
-    logger.success(f"References: {complete}/{len(rows)} complete -> {config.output}")
+    logger.info(f"References: {complete}/{len(rows)} complete -> {config.output}")
 
 
 def run(config: Config):

@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from textwrap import dedent
 
-from loguru import logger
 from mcp.types import TextContent
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -40,12 +39,12 @@ from awm.tools import (
     tools_robust_json_loads,
 )
 
+logger = logging.getLogger(__name__)
+
 for _name in ["mcp", "httpx", "httpcore", "anyio"]:
     logging.getLogger(_name).setLevel(logging.CRITICAL)
     logging.getLogger(_name).propagate = False
     logging.getLogger(_name).handlers = []
-
-logger.disable("mcp")
 
 
 @dataclass

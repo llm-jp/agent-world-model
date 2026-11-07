@@ -9,6 +9,7 @@ Supports two verification modes:
 import asyncio
 import inspect
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -17,7 +18,6 @@ from enum import Enum
 from pathlib import Path
 from textwrap import dedent
 
-from loguru import logger
 from openai import AsyncOpenAI
 
 from awm.tools import (
@@ -28,6 +28,8 @@ from awm.tools import (
     tools_json_save,
     tools_jsonl_load,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class VerificationMode(Enum):

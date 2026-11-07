@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import shutil
 import signal
@@ -8,7 +9,6 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 
-from loguru import logger
 from tqdm import tqdm
 
 from awm.gpt import GPTClient
@@ -27,6 +27,8 @@ from awm.tools import (
     wait_for_server,
     wait_port_free,
 )
+
+logger = logging.getLogger(__name__)
 
 PYTHON_VERSION = f"{sys.version_info.major}.{sys.version_info.minor}"
 
@@ -353,7 +355,7 @@ def test_all_environments(args: Config):
             failed.append((scenario_name, output))
 
     for name in passed:
-        logger.success(f"PASSED: {name}")
+        logger.info(f"PASSED: {name}")
 
     logger.info(f"\n{'=' * 100}\n\n")
 
@@ -528,7 +530,7 @@ def generate_all_environments(args: Config):
                             "db_path": db_path,
                             "full_code": env_spec["full_code"],
                         }
-                        logger.success(
+                        logger.info(
                             f"{scenario_name}: {len(env_spec['full_code'])} chars of code"
                         )
                         candidates_to_test.append((api_spec_item, result))

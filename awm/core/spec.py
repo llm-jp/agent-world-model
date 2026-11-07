@@ -1,7 +1,6 @@
+import logging
 import os
 from dataclasses import dataclass
-
-from loguru import logger
 
 from awm.gpt import GPTClient
 from awm.prompts import API_GENERATION_SYSTEM_PROMPT, API_GENERATION_USER_PROMPT
@@ -12,6 +11,8 @@ from awm.tools import (
     tools_jsonl_save,
     tools_robust_json_loads,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -114,7 +115,7 @@ def generate_all_api_specs(args: Config):
                         results.append(
                             {"scenario": scenario_name, "api_spec": api_spec}
                         )
-                        logger.success(
+                        logger.info(
                             f"{scenario_name}: {len(api_groups)} groups, {total_endpoints} endpoints"
                         )
                         continue

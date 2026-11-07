@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import subprocess
@@ -6,10 +7,10 @@ import textwrap
 from dataclasses import dataclass
 from datetime import datetime
 
-from loguru import logger
-
 from awm.core.reset import reset_single_database
 from awm.tools import normalize_scenario_name, tools_jsonl_load
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

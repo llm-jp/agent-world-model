@@ -10,11 +10,10 @@ with "+", e.g. "tool_rename+task_paraphrase+miss_param"; a single part name is
 a recipe of its own.
 """
 
+import logging
 import os
 import shutil
 from dataclasses import dataclass
-
-from loguru import logger
 
 from awm.core.augment.compose import (
     PARTS,
@@ -32,6 +31,8 @@ from awm.tools import (
     tools_jsonl_save,
     tools_robust_json_loads,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -203,4 +204,4 @@ def run(config: Config):
     for variant in variants:
         key = "+".join(variant.meta.augmentations)
         counts[key] = counts.get(key, 0) + 1
-    logger.success(f"Added {len(variants)} augmented tasks: {counts}")
+    logger.info(f"Added {len(variants)} augmented tasks: {counts}")

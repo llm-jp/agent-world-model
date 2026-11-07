@@ -1,9 +1,8 @@
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-
-from loguru import logger
 
 from awm.gpt import GPTClient
 from awm.prompts import (
@@ -17,6 +16,8 @@ from awm.tools import (
     tools_robust_json_loads,
     tools_token_count,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -138,9 +139,7 @@ def create_sqlite_database(
 
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
     tables = cursor.fetchall()
-    logger.success(
-        f"Database created with {len(tables)} tables: {[t[0] for t in tables]}"
-    )
+    logger.info(f"Database created with {len(tables)} tables: {[t[0] for t in tables]}")
 
     conn.close()
 
@@ -261,7 +260,7 @@ def generate_all_databases(args: Config):
                         )
                     else:
                         results.append(db_data)
-                        logger.success(
+                        logger.info(
                             f"{scenario_name}: Successfully processed with {error_ratio:.2%} error rate"
                         )
                         continue

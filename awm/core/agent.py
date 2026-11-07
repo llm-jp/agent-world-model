@@ -4,8 +4,6 @@ Please refer to https://github.com/Snowflake-Labs/agent-world-model for more det
 """
 
 import asyncio
-import contextlib
-import io
 import json
 import logging
 import os
@@ -34,23 +32,19 @@ from awm.tools import (
     async_wait_for_server,
     find_scenario_entry,
     get_random_available_port,
-    isolated_mcp_env,
+    mcp_call_tool,
+    mcp_list_tools,
     resolve_llm_config,
     tools_json_save,
     tools_jsonl_load,
     tools_robust_json_loads,
 )
 
-for _name in ["mcp_agent", "mcp", "httpx", "httpcore", "anyio"]:
+for _name in ["mcp", "httpx", "httpcore", "anyio"]:
     logging.getLogger(_name).setLevel(logging.CRITICAL)
     logging.getLogger(_name).propagate = False
     logging.getLogger(_name).handlers = []
 
-from mcp_agent.agents.agent import Agent
-from mcp_agent.app import MCPApp
-from mcp_agent.config import LoggerSettings, MCPServerSettings, MCPSettings, Settings
-
-logger.disable("mcp_agent")
 logger.disable("mcp")
 
 
@@ -291,70 +285,32 @@ def format_tools_for_response(tools: list[dict]) -> str:
     return docs_text.strip()
 
 
-MCP_SERVER_NAME = "mcp_server"
-
-
 class MCPToolExecutor:
     def __init__(self, mcp_url: str, timeout: float = 60.0):
         self.mcp_url = mcp_url
         self.timeout = timeout
         self._tools: list[dict] = []
 
-        with isolated_mcp_env():
-            settings = Settings(
-                execution_engine="asyncio",
-                logger=LoggerSettings(
-                    type="none",
-                    transports=["none"],
-                    progress_display=False,
-                    level="error",
-                ),
-                mcp=MCPSettings(
-                    servers={
-                        MCP_SERVER_NAME: MCPServerSettings(
-                            transport="streamable_http",
-                            url=self.mcp_url,
-                        ),
-                    }
-                ),
-            )
-            self._app = MCPApp(name="demo_agent", settings=settings)
-            self._agent = Agent(name="executor", server_names=[MCP_SERVER_NAME])
-
     async def list_tools(self) -> list[dict]:
-        with contextlib.redirect_stderr(io.StringIO()):
-            async with self._app.run(), self._agent:
-                result = await asyncio.wait_for(
-                    self._agent.list_tools(), timeout=self.timeout
-                )
-                self._tools = []
-                for t in result.tools:
-                    tool_info = {
-                        "name": t.name,
-                        "description": t.description or "",
-                        "inputSchema": t.inputSchema or {},
-                    }
-                    self._tools.append(tool_info)
-                return self._tools
+        tools = await mcp_list_tools(self.mcp_url, self.timeout)
+        self._tools = [
+            {
+                "name": t.name,
+                "description": t.description or "",
+                "inputSchema": t.input_schema or {},
+            }
+            for t in tools
+        ]
+        return self._tools
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
-        with contextlib.redirect_stderr(io.StringIO()):
-            async with self._app.run(), self._agent:
-                result = await asyncio.wait_for(
-                    self._agent.call_tool(tool_name, arguments),
-                    timeout=self.timeout,
-                )
-                # Extract text from result content
-                parts = [
-                    c.text if isinstance(c, TextContent) else str(c)
-                    for c in result.content
-                ]
-
-                text = "\n".join(parts)
-
-                if result.isError:
-                    return f"Error: {text}"
-                return text
+        result = await mcp_call_tool(self.mcp_url, tool_name, arguments, self.timeout)
+        text = "\n".join(
+            c.text if isinstance(c, TextContent) else str(c) for c in result.content
+        )
+        if result.is_error:
+            return f"Error: {text}"
+        return text
 
 
 async def generate_response(

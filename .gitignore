@@ -1,5 +1,4 @@
 /scripts/
-/serve/
 /outputs/servers/
 /outputs/debug_openai_gpt-oss-120b_ja/
 /outputs/seed_python_stdlib.jsonl

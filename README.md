@@ -96,11 +96,11 @@ export AWM_SYN_OVERRIDE_MODEL="your-model-name such as gpt-5"
 ```
 
 ### vLLM and Slurm
-vLLM conflicts with the pinned `fastapi` / `numpy` of the pipeline, so it lives in a separate uv project under `serve/` (Linux x86_64 only).
+vLLM is a dependency of the project on Linux x86_64 only, so `uv sync` installs it there into the same environment as the pipeline.
 
 ```bash
 mkdir -p logs
-# build both environments: `uv sync` and `uv sync --project serve`
+# build the environment with `uv sync`
 sbatch scripts/install.sh
 # start the generation and embedding vLLM servers, then run `awm gen all`
 # options: -d (sample run) -r (resume) -m model -l ja|en -s seed_file -v sql|code (verifier mode), see `bash scripts/run_gen.sh -h`
@@ -145,7 +145,7 @@ The embedding model [cl-nagoya/ruri-v3-70m](https://huggingface.co/cl-nagoya/rur
 
 ```bash
 # serve the embedding model (mean pooling, read from its sentence-transformers config)
-uv run --project serve vllm serve cl-nagoya/ruri-v3-70m --runner pooling --convert embed --port 8002
+uv run vllm serve cl-nagoya/ruri-v3-70m --runner pooling --convert embed --port 8002
 
 # optional, defaults to http://localhost:8002/v1
 export EMBEDDING_OPENAI_BASE_URL="http://localhost:8002/v1"

@@ -1,6 +1,4 @@
 import asyncio
-import contextlib
-import io
 import json
 import os
 import random
@@ -15,9 +13,8 @@ import json_repair
 import orjson
 from json_repair import repair_json
 from loguru import logger
-from mcp_agent.agents.agent import Agent
-from mcp_agent.app import MCPApp
-from mcp_agent.config import LoggerSettings, MCPServerSettings, MCPSettings, Settings
+from mcp import Client
+from mcp.types import CallToolResult, Tool
 from tiktoken import encoding_for_model
 
 
@@ -123,47 +120,49 @@ def get_random_available_port(
     )
 
 
-@contextlib.contextmanager
-def isolated_mcp_env():
-    MCP_ENV_SAFE_PREFIXES = [
-        "HOME",
-        "USER",
-        "PATH",
-        "LANG",
-        "TERM",
-        "SHELL",
-        "PWD",
-        "TMPDIR",
-        "TMP",
-        "TEMP",
-    ]
-    MCP_ENV_SAFE_KEYS = [
-        "PYTHONPATH",
-        "VIRTUAL_ENV",
-        "CONDA_PREFIX",
-        "CONDA_DEFAULT_ENV",
-    ]
+def mcp_tool_to_dict(tool: Tool) -> dict:
+    tool_info = {
+        "name": tool.name,
+        "description": tool.description,
+        "inputSchema": tool.input_schema,
+    }
+    if tool.title:
+        tool_info["title"] = tool.title
+    if tool.output_schema:
+        tool_info["outputSchema"] = tool.output_schema
+    if tool.annotations:
+        tool_info["annotations"] = tool.annotations.model_dump_json()
+    if tool.meta:
+        tool_info["meta"] = tool.meta
+    return tool_info
 
-    saved_env = dict(os.environ)
 
-    keys_to_remove = []
-    for key in os.environ:
-        is_safe = (
-            any(key.startswith(prefix) for prefix in MCP_ENV_SAFE_PREFIXES)
-            or key in MCP_ENV_SAFE_KEYS
-        )
-        if not is_safe:
-            keys_to_remove.append(key)
+# The environment servers are served by fastapi-mcp, which only speaks the
+# initialize handshake, so the client skips the server/discover probe.
+# The client raises connection failures wrapped in task-group exception groups,
+# whose message ("unhandled errors in a TaskGroup") hides the cause.
+def _single_cause(error: BaseException) -> BaseException:
+    while isinstance(error, BaseExceptionGroup) and len(error.exceptions) == 1:
+        error = error.exceptions[0]
+    return error
 
-    for key in keys_to_remove:
-        del os.environ[key]
 
+async def mcp_list_tools(url: str, timeout: float) -> list[Tool]:
     try:
-        yield
-    finally:
-        # restore all environment variables
-        os.environ.clear()
-        os.environ.update(saved_env)
+        async with asyncio.timeout(timeout), Client(url, mode="legacy") as client:
+            return (await client.list_tools()).tools
+    except BaseExceptionGroup as group:
+        raise _single_cause(group) from group
+
+
+async def mcp_call_tool(
+    url: str, tool_name: str, arguments: dict, timeout: float
+) -> CallToolResult:
+    try:
+        async with asyncio.timeout(timeout), Client(url, mode="legacy") as client:
+            return await client.call_tool(tool_name, arguments)
+    except BaseExceptionGroup as group:
+        raise _single_cause(group) from group
 
 
 async def check_mcp_server(
@@ -172,64 +171,16 @@ async def check_mcp_server(
     """
     return (is_running, tools_count, tools, error)
     """
+    try:
+        tools = [mcp_tool_to_dict(t) for t in await mcp_list_tools(url, timeout)]
+    except TimeoutError:
+        return (False, 0, [], f"Timeout after {timeout}s")
+    except Exception as e:  # noqa: BLE001
+        return (False, 0, [], str(e))
 
-    MCP_SERVER_NAME = "mcp_tool"
-
-    with isolated_mcp_env():
-        settings = Settings(
-            execution_engine="asyncio",
-            logger=LoggerSettings(
-                type="none",
-                transports=["none"],
-                progress_display=False,
-                level="error",
-            ),
-            mcp=MCPSettings(
-                servers={
-                    MCP_SERVER_NAME: MCPServerSettings(
-                        transport="streamable_http", url=url
-                    ),
-                }
-            ),
-        )
-
-        app = MCPApp(name="_mcp_probe", settings=settings)
-
-        with contextlib.redirect_stderr(io.StringIO()):
-            try:
-                async with app.run():
-                    agent = Agent(name="_probe", server_names=[MCP_SERVER_NAME])
-                    async with agent:
-                        tools_result = await asyncio.wait_for(
-                            agent.list_tools(), timeout=timeout
-                        )
-                        tools = []
-                        for t in tools_result.tools:
-                            tool_info = {
-                                "name": t.name,
-                                "description": t.description,
-                                "inputSchema": t.inputSchema,
-                            }
-                            if t.title:
-                                tool_info["title"] = t.title
-                            if t.outputSchema:
-                                tool_info["outputSchema"] = t.outputSchema
-                            if t.annotations:
-                                tool_info["annotations"] = (
-                                    t.annotations.model_dump_json()
-                                )
-                            if t.meta:
-                                tool_info["meta"] = t.meta
-
-                            tools.append(tool_info)
-
-                        if len(tools) == 0:
-                            return (False, 0, [], "No tools available from MCP server")
-                        return (True, len(tools), tools, None)
-            except TimeoutError:
-                return (False, 0, [], f"Timeout after {timeout}s")
-            except Exception as e:  # noqa: BLE001
-                return (False, 0, [], str(e))
+    if len(tools) == 0:
+        return (False, 0, [], "No tools available from MCP server")
+    return (True, len(tools), tools, None)
 
 
 async def async_wait_for_server(port: int, timeout: float = 60.0) -> bool:

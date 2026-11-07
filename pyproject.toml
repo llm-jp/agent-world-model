@@ -5,12 +5,13 @@ description = "Agent World Model"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.115.12",
-    "fastapi-mcp==0.4.0",
+    "fastapi>=0.133.0",
+    "httpx>=0.28.1",
     "json-repair>=0.56.0",
+    "jsonschema>=4.26.0",
     "loguru>=0.7.3",
-    "mcp-agent==0.2.6",
-    "numpy>=2.4.2",
+    "mcp>=2.0.0",
+    "numpy>=2",
     "openai>=2.17.0",
     "orjson>=3.11.7",
     "pydantic>=2.12.5",
@@ -18,6 +19,8 @@ dependencies = [
     "sqlalchemy==2.0.41",
     "tiktoken>=0.12.0",
     "tqdm>=4.67.3",
+    "uvicorn>=0.40.0",
+    "vllm>=0.32.0 ; platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +35,10 @@ bench = [
 python-preference = "only-managed"
 # precompile .pyc so that processes do not compile on import from Lustre
 compile-bytecode = true
+# bfcl-eval (bench extra) pins filelock==3.20.0, older than vllm requires
+override-dependencies = ["filelock>=3.20.3"]
+# keep every platform on the fastapi range that vllm accepts, so that tests off Linux match the cluster
+constraint-dependencies = ["fastapi<0.137"]
 
 [tool.uv.sources]
 mcp-adapted-bench = { path = "mcp-adapted-bench", editable = true }
@@ -51,3 +58,7 @@ packages = ["awm"]
 
 [project.scripts]
 awm = "awm.cli:main"
+
+[tool.ruff]
+# copied from fastapi-mcp and kept byte-for-byte close to upstream for easy comparison
+extend-exclude = ["awm/core/mcp_bridge/openapi.py"]

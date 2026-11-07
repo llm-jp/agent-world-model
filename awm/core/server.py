@@ -127,9 +127,8 @@ def _generate_server_code(config: Config, db_path: str) -> str:
             """
             lines = format_raw_code_to_lines(raw_code, indent=4)
             raw_code = f"""
-            from fastapi_mcp import FastApiMCP
-            mcp = FastApiMCP(app)
-            mcp.mount_http()
+            from awm.core.mcp_bridge import mount_mcp
+            mount_mcp(app)
             print("MCP server enabled, please visit http://{config.host}:{config.port}/mcp for the MCP service")
             """
             lines += format_raw_code_to_lines(raw_code, indent=4)

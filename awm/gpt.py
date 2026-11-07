@@ -387,15 +387,28 @@ class GPTClient:
         progress_bar: bool = True,
     ) -> list[str]:
         responses = self.batch_requests(requests, progress_bar)
+        return self._extract_contents(responses)
+
+    def _extract_contents(self, responses: list[ChatCompletionFallback]) -> list[str]:
         contents = []
         for i, response in enumerate(responses):
             try:
-                content = response.choices[0].message.content
-                contents.append(content)
+                choice = response.choices[0]
+                content = choice.message.content
             except (AttributeError, IndexError, KeyError) as e:
                 logger.error(f"Failed to extract content from response {i}: {e}")
                 logger.error(f"Response structure: {response}")
                 contents.append("")
+                continue
+            if not content:
+                # A reasoning model that exhausts the token limit while thinking returns
+                # finish_reason=length with no content.
+                usage = response.get("usage") or {}
+                logger.warning(
+                    f"Empty content in response {i}: finish_reason={choice.get('finish_reason')}, "
+                    f"completion_tokens={usage.get('completion_tokens')}"
+                )
+            contents.append(content or "")
         return contents
 
     def _run_async(self, coro):
@@ -487,16 +500,7 @@ class GPTClient:
         progress_bar: bool = True,
     ) -> list[str]:
         responses = await self.batch_requests_async(requests, progress_bar)
-        contents = []
-        for i, response in enumerate(responses):
-            try:
-                content = response.choices[0].message.content
-                contents.append(content)
-            except (AttributeError, IndexError, KeyError) as e:
-                logger.error(f"Failed to extract content from response {i}: {e}")
-                logger.error(f"Response structure: {response}")
-                contents.append("")
-        return contents
+        return self._extract_contents(responses)
 
     async def batch_requests_async(
         self,

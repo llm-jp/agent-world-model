@@ -47,6 +47,13 @@ class Config:
         )
 
 
+EMPTY_RESPONSE_ERROR = (
+    "The previous generation returned an empty response, most likely because the "
+    "reasoning exhausted the token limit before any output was written. Keep the "
+    "reasoning brief and write the JSON output directly."
+)
+
+
 def summarize_errors(
     args: Config, client: GPTClient, raw_error_msg_list: list[str]
 ) -> list[str]:
@@ -67,21 +74,28 @@ def summarize_errors(
             "model": args.model,
         }
 
-    logger.info(f"Summarizing {len(raw_error_msg_list)} error messages...")
-    requests = [create_sum_request(msg) for msg in raw_error_msg_list]
+    # Fixed messages such as EMPTY_RESPONSE_ERROR are already concise guidance, and an
+    # empty message makes the model ask for input, which would be fed back as guidance.
+    to_summarize = [
+        i
+        for i, msg in enumerate(raw_error_msg_list)
+        if msg and msg != EMPTY_RESPONSE_ERROR
+    ]
+    logger.info(f"Summarizing {len(to_summarize)} error messages...")
+    summaries = list(raw_error_msg_list)
+    if not to_summarize:
+        return summaries
+
+    requests = [create_sum_request(raw_error_msg_list[i]) for i in to_summarize]
     responses = client.batch_chat_completion(requests, progress_bar=True)
-
-    summaries = []
-
-    for raw_msg, response in zip(raw_error_msg_list, responses):
+    for i, response in zip(to_summarize, responses):
         if not response:
             logger.error("Failed to summarize error message: Empty response")
-            summaries.append(raw_msg)  # Fallback to raw message
         else:
             logger.info(
                 f"Summarized error message: {len(response)} chars ({tools_token_count(response, args.model)} tokens)\nPreview: {response[:800]}..."
             )
-            summaries.append(response)
+            summaries[i] = response
 
     return summaries
 
@@ -217,6 +231,7 @@ def generate_and_insert_sample_data(args: Config):
                 logger.error(
                     f"Failed to generate sample data for {scenario_name}: Empty response"
                 )
+                error_msg = {EMPTY_RESPONSE_ERROR}
             else:
                 try:
                     logger.info(
@@ -275,7 +290,7 @@ def generate_and_insert_sample_data(args: Config):
                         continue
 
                 except Exception as e:  # noqa: BLE001
-                    error_msg = f"Failed to parse or process sample data: {e!s}"
+                    error_msg = {f"Failed to parse or process sample data: {e!s}"}
                     logger.error(
                         f"Failed to process sample data for {scenario_name}: {e}"
                     )

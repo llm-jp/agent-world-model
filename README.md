@@ -75,6 +75,8 @@ export VLLM_API_KEY="your-api-key"
 export AWM_SYN_MAX_TOKENS="32768"
 # optional, set false to disable the thinking mode of reasoning models (e.g., Qwen3) via chat_template_kwargs
 export AWM_SYN_ENABLE_THINKING="false"
+# optional, reasoning effort of reasoning models that support it (low, medium, high or xhigh); with vllm it is passed to the chat template, and Qwen3.8-Flash-Next accepts only low, medium or xhigh
+export AWM_SYN_REASONING_EFFORT="medium"
 # optional, language of the synthesis prompts: en (default) or ja. ja (awm/prompts_ja.py) covers the scenario, task and sample data prompts; schema, API, server and verifier generation stay in English
 export AWM_SYN_LANG="ja"
 

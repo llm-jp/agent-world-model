@@ -60,6 +60,20 @@ def parse_enable_thinking(value: str | None) -> bool | None:
     raise ValueError(f"AWM_SYN_ENABLE_THINKING must be true or false, got {value!r}")
 
 
+REASONING_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
+
+
+def parse_reasoning_effort(value: str | None) -> str | None:
+    if value is None or value.strip() == "":
+        return None
+    normalized = value.strip().lower()
+    if normalized not in REASONING_EFFORT_LEVELS:
+        raise ValueError(
+            f"AWM_SYN_REASONING_EFFORT must be one of {REASONING_EFFORT_LEVELS}, got {value!r}"
+        )
+    return normalized
+
+
 def build_request_params(
     messages: list[dict[str, str]],
     model: str,
@@ -68,6 +82,7 @@ def build_request_params(
     provider: str,
     max_tokens_cap: int | None,
     enable_thinking: bool | None,
+    reasoning_effort: str | None = None,
     **kwargs,
 ) -> dict[str, Any]:
     params = {"model": model, "messages": messages}
@@ -98,6 +113,10 @@ def build_request_params(
             "enable_thinking": enable_thinking,
         }
         params["extra_body"] = extra_body
+
+    if reasoning_effort is not None:
+        # vLLM forwards this field to the chat template as a keyword argument.
+        params["reasoning_effort"] = reasoning_effort
 
     return params
 
@@ -151,6 +170,9 @@ class GPTClient:
         self._max_tokens_cap = parse_max_tokens_cap(os.getenv("AWM_SYN_MAX_TOKENS"))
         self._enable_thinking = parse_enable_thinking(
             os.getenv("AWM_SYN_ENABLE_THINKING")
+        )
+        self._reasoning_effort = parse_reasoning_effort(
+            os.getenv("AWM_SYN_REASONING_EFFORT")
         )
 
         assert self.endpoint is not None and self.api_key is not None, (
@@ -259,6 +281,7 @@ class GPTClient:
             provider=self.provider,
             max_tokens_cap=self._max_tokens_cap,
             enable_thinking=self._enable_thinking,
+            reasoning_effort=self._reasoning_effort,
             **kwargs,
         )
         last_error = None

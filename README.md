@@ -313,7 +313,7 @@ awm gen aug \
 sbatch scripts/run_gen_aug.sh -o outputs/<dir> -p "shuffle,tool_rename,miss_func" -n 20
 ```
 
-Rerunning the task stage (`awm gen task`) overwrites `gen_tasks.jsonl` and drops the augmented tasks, so rerun `awm gen aug` afterwards.
+The other generation stages leave the augmented data alone: `awm gen db`, `sample`, `spec`, `verifier` and `reference` read only the original tasks of the original scenarios, and `awm gen db`, `sample` and `env` keep the rows of rebuilt environments when they rewrite their files. A rebuilt environment is a self-contained copy (code, database, tasks and verifiers), so it keeps working after its source scenario is regenerated, but it is not updated; rerun `awm gen aug` to rebuild it. Rerunning the task stage (`awm gen task`) overwrites `gen_tasks.jsonl` and drops every augmented task, so rerun `awm gen aug` afterwards. Augmented tasks written by an older version of `awm gen aug` (e.g. a `task_meta` with `rename_tools`) cannot be read any more; rerunning `awm gen aug` replaces them.
 
 ## Benchmark
 To align the evaluation with the trained tool-use protocol that requires agents to finish the task via unified MCP interface: `list_tools` and `call_tool`, we modified and adapated the evaluation harness of the following benchmarks: BFCLv3, τ²-bench-verified, and MCP-Universe. See more details at [mcp-adapted-bench](https://github.com/Raibows/mcp-adapted-bench). Remember to set the aforementioned env vars for the LLM agent API config before running the evaluation.

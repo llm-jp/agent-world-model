@@ -13,10 +13,12 @@ from awm.prompts import (
 from awm.tools import (
     format_db_schema,
     normalize_scenario_name,
+    original_task_rows,
     tools_jsonl_load,
     tools_jsonl_save,
     tools_robust_json_loads,
     tools_token_count,
+    with_rebuilt_env_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,7 +160,8 @@ def execute_sample_data(
 
 def generate_and_insert_sample_data(args: Config):
 
-    tasks_data = tools_jsonl_load(args.input_task)
+    # rebuilt environments and augmented tasks belong to `awm gen aug`
+    tasks_data = original_task_rows(tools_jsonl_load(args.input_task))
     db_schemas_data = tools_jsonl_load(args.input_db)
     db_schemas_data = {
         normalize_scenario_name(item["scenario"]): item for item in db_schemas_data
@@ -349,7 +352,7 @@ def generate_and_insert_sample_data(args: Config):
         current_requests = next_requests
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    tools_jsonl_save(results, args.output)
+    tools_jsonl_save(with_rebuilt_env_rows(results, args.output), args.output)
 
     logger.info(f"\n{'=' * 100}")
     logger.info("Sample data generation complete!")

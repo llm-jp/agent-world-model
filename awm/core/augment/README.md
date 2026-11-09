@@ -34,6 +34,20 @@
    - verifier ファイル: 同じ `(scenario, task_idx)` で `"augmented": true` の行として足す。
    - 初回実行時に `.bak` を作る。再実行すると、前回の拡張分を消してから付け直す (`strip_augmented`, `awm/tools.py`)。
 
+## 既存の生成ステージとの関係
+
+拡張データは、既存のファイルに追記している。そのため、生成ステージを `awm gen aug` のあとに実行し直しても壊れないよう、次の取り決めにしている。判定の関数は `awm/tools.py` にまとめている。
+
+| 関数 | 中身 | 使う場所 |
+|---|---|---|
+| `original_task_rows` | 作り直した環境の行を除き、拡張タスクを外した `gen_tasks.jsonl` の行 | `gen db` / `gen sample` / `gen spec` / `gen verifier` / `gen reference` の入力 |
+| `with_rebuilt_env_rows` | 出力ファイルにあった作り直した環境の行を、書き直した結果に残す | `gen db` / `gen sample` / `gen env` の出力 |
+| `is_rebuilt_env_row` | 行が作り直した環境のものか (`source_scenario` を持つか) | 上の 2 つと `awm gen aug` |
+
+- **作り直した環境の扱い**: コード・DB・タスク・verifier をまるごと写したものなので、元のシナリオを作り直してもそのまま動く。ただし更新はされないので、新しい内容に揃えるには `awm gen aug` を実行し直す。
+- **`awm gen task` を実行し直した場合**: `gen_tasks.jsonl` を作り直すので、拡張タスクはすべて消える。そのあとで `awm gen aug` を実行し直す。
+- **古い形式のデータ**: 前のバージョンの `task_meta` (`ToolView` の `rename_tools` を含むもの) は読めない。`awm gen aug` を実行し直すと入れ替わる。`--allowed_scenarios` で選ばなかったシナリオに古い形式が残っている場合は、警告を出して捨てる (`existing_variants`)。
+
 ## パーツ一覧
 
 パーツ名は、ツールの見せ方・タスク文・追加発話を扱うものを `compose.py` の `PARTS` に、名前を変えるものを `env_parts.py` の `ENV_PARTS` に登録する。どちらも `--parts` で指定する。
@@ -182,7 +196,10 @@ Slurm では `scripts/run_gen_aug.sh` で vLLM サーバーごと両方の段階
 
 ## テスト
 
-`tests/augment/`
+`tests/augment/` と、次の 2 つ。
+
+- `tests/test_augmented_data.py`: 既存の生成ステージとの取り決め (`original_task_rows` など)
+- `tests/test_server_process.py`: サーバーの起動と停止 (`serve_scenario`)
 
 | ファイル | 対象 |
 |---|---|

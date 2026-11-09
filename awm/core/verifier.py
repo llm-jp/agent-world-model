@@ -19,6 +19,7 @@ from awm.prompts import (
 from awm.tools import (
     dump_sqlite_to_string,
     normalize_scenario_name,
+    original_task_rows,
     tools_jsonl_load,
     tools_jsonl_save,
     tools_robust_json_loads,
@@ -573,7 +574,8 @@ def run(config: Config):
     logger.info(f"config for generating verification code: {config}")
 
     existing_results = load_existing_results(config.output)
-    task_items = tools_jsonl_load(config.input_task)
+    # augmented tasks get their verifiers from `awm gen aug`
+    task_items = original_task_rows(tools_jsonl_load(config.input_task))
 
     if config.allowed_scenarios:
         task_items = [

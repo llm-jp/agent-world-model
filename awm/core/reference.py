@@ -16,14 +16,19 @@ from awm.core.agent import Config as AgentConfig
 from awm.core.agent import run_agent
 from awm.core.verify import Config as VerifyConfig
 from awm.core.verify import VerificationMode, run_verify
-from awm.tools import normalize_scenario_name, tools_jsonl_load, tools_jsonl_save
+from awm.tools import (
+    normalize_scenario_name,
+    original_task_rows,
+    tools_jsonl_load,
+    tools_jsonl_save,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class Config:
-    # gen_tasks.jsonl; augmented tasks (task_meta set) are skipped
+    # gen_tasks.jsonl; augmented tasks and rebuilt environments are skipped
     input_task: str
     # code-mode verifier file (gen_verifier.pure_code.jsonl)
     input_verifier: str
@@ -73,14 +78,11 @@ def pending_tasks(
 ) -> list[tuple[str, int, str]]:
     """(scenario, task_idx, task) of original tasks without a reference yet."""
     pending = []
-    for item in task_items:
+    for item in original_task_rows(task_items):
         scenario = normalize_scenario_name(item["scenario"])
         if allowed_scenarios and scenario not in allowed_scenarios:
             continue
-        metas = item.get("task_meta") or []
         for task_idx, task in enumerate(item["tasks"]):
-            if task_idx < len(metas) and metas[task_idx] is not None:
-                continue
             if (scenario, task_idx) not in done:
                 pending.append((scenario, task_idx, task))
     return pending

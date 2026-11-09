@@ -4,6 +4,8 @@ import logging
 import random
 from collections.abc import Callable
 
+from pydantic import ValidationError
+
 from awm.core.augment.draft import Draft, LLMStep, Part, Variant, finalize
 from awm.core.augment.env_parts import ENV_PARTS
 from awm.core.augment.followup_parts import MissFunc, MissParam
@@ -180,11 +182,18 @@ def existing_variants(
         for idx, meta in enumerate(item.get("task_meta") or []):
             if meta is None or (scenario, idx) not in codes:
                 continue
+            try:
+                task_meta = TaskMeta.model_validate(meta)
+            except ValidationError as e:
+                logger.warning(
+                    f"Dropping {item['scenario']} task {idx}: its task_meta is from an older format ({e.error_count()} errors)"
+                )
+                continue
             variants.append(
                 Variant(
                     scenario=item["scenario"],
                     task=item["tasks"][idx],
-                    meta=TaskMeta.model_validate(meta),
+                    meta=task_meta,
                     verifier_code=codes[(scenario, idx)],
                 )
             )

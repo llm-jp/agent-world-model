@@ -7,6 +7,7 @@ from awm.prompts import API_GENERATION_SYSTEM_PROMPT, API_GENERATION_USER_PROMPT
 from awm.tools import (
     format_db_schema,
     normalize_scenario_name,
+    original_task_rows,
     tools_jsonl_load,
     tools_jsonl_save,
     tools_robust_json_loads,
@@ -39,7 +40,8 @@ class Config:
 
 
 def generate_all_api_specs(args: Config):
-    tasks_data = tools_jsonl_load(args.input_task)
+    # rebuilt environments and augmented tasks belong to `awm gen aug`
+    tasks_data = original_task_rows(tools_jsonl_load(args.input_task))
     schema_data = tools_jsonl_load(args.input_db)
     schema_map = {
         normalize_scenario_name(item["scenario"]): item for item in schema_data

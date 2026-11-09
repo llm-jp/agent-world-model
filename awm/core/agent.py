@@ -4,12 +4,12 @@ Please refer to https://github.com/Snowflake-Labs/agent-world-model for more det
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import shutil
-import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,18 +19,10 @@ from mcp.types import TextContent
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
-from awm.core.server import (
-    Config as ServerConfig,
-)
-from awm.core.server import (
-    _prepare_database,
-    start_server_process,
-)
+from awm.core.server import serve_scenario
 from awm.core.tool_view import PresentedTools, TaskMeta, ToolCallRejected
 from awm.tools import (
-    async_wait_for_server,
     find_scenario_entry,
-    get_random_available_port,
     mcp_call_tool,
     mcp_list_tools,
     resolve_llm_config,
@@ -424,37 +416,21 @@ async def run_agent(config: Config):
     os.makedirs(output_dir, exist_ok=True)
 
     # Setup database and MCP server if scenario is provided
-    server_proc = None
     db_file_path = None
+    servers = contextlib.AsyncExitStack()
 
     if scenario and not config.mcp_url:
-        # Prepare database (reuse server module logic)
-        server_cfg = ServerConfig(
-            scenario=scenario,
-            envs_load_path=config.envs_path,
-            db_schema_path=config.db_path,
-            sample_path=config.sample_path,
+        server = await servers.enter_async_context(
+            serve_scenario(
+                scenario,
+                config.envs_path,
+                output_dir,
+                db_schema_path=config.db_path,
+                sample_path=config.sample_path,
+            )
         )
-        db_file_path = _prepare_database(server_cfg, output_dir)
-
-        # Start MCP server
-        port = get_random_available_port()
-        server_proc = start_server_process(
-            scenario, config.envs_path, db_file_path, port, output_dir=output_dir
-        )
-        mcp_url = f"http://127.0.0.1:{port}/mcp"
-
-        logger.info(f"Waiting for MCP server on port {port}...")
-        if not await async_wait_for_server(port, timeout=60):
-            if server_proc.poll() is not None:
-                stderr = (
-                    server_proc.stderr.read().decode() if server_proc.stderr else ""
-                )
-                logger.error(
-                    f"MCP server process exited with code {server_proc.returncode}. stderr: {stderr[:1000]}"
-                )
-            raise RuntimeError(f"MCP server failed to start on port {port}")
-        logger.info(f"MCP server ready at {mcp_url}")
+        mcp_url = server.url
+        db_file_path = server.db_path
     else:
         mcp_url = config.mcp_url
         if not mcp_url:
@@ -680,14 +656,7 @@ async def run_agent(config: Config):
 
     finally:
         # Cleanup MCP server
-        if server_proc and server_proc.poll() is None:
-            logger.info("Shutting down MCP server...")
-            server_proc.terminate()
-            try:
-                server_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                server_proc.kill()
-                server_proc.wait()
+        await servers.aclose()
 
 
 def run(config: Config):

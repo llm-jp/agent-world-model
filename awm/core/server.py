@@ -1,14 +1,23 @@
+import contextlib
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import textwrap
+import time
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime
 
 from awm.core.reset import reset_single_database
-from awm.tools import normalize_scenario_name, tools_jsonl_load
+from awm.tools import (
+    async_wait_for_server,
+    get_random_available_port,
+    normalize_scenario_name,
+    tools_jsonl_load,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +199,9 @@ def start_server_process(
 ) -> subprocess.Popen:
     """Start MCP server as a background subprocess.
 
-    Returns the Popen handle so the caller can manage the process lifecycle.
+    Returns the Popen handle; stop it with stop_server_process. The server
+    itself runs in a child shell of this process, so the process gets a
+    session of its own for the whole group to be stopped together.
     """
     cmd = [
         sys.executable,
@@ -208,7 +219,116 @@ def start_server_process(
     if output_dir:
         cmd.extend(["--output_dir", output_dir])
     logger.info(f"Starting MCP server: {' '.join(cmd)}")
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+    )
+
+
+# Signalling a group that no longer has live processes fails with ESRCH, or on
+# macOS with EPERM while its exited members wait to be reaped.
+GROUP_GONE = (ProcessLookupError, PermissionError)
+
+
+def stop_server_process(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    """Stop a server from start_server_process, including the server it runs.
+
+    Returns once every process of the group has exited, so the port is free.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except GROUP_GONE:
+        proc.wait()
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        # reap the launcher, which would otherwise stay in the group as a zombie
+        proc.poll()
+        try:
+            os.killpg(proc.pid, 0)
+        except GROUP_GONE:
+            return
+        time.sleep(0.1)
+    with contextlib.suppress(*GROUP_GONE):
+        os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait()
+
+
+class ServerStartError(RuntimeError):
+    """The server did not start; `output` holds what it wrote."""
+
+    def __init__(self, message: str, output: str):
+        super().__init__(message)
+        self.output = output
+
+
+@dataclass
+class RunningServer:
+    url: str
+    port: int
+    # the database the server works on, and its copy from before the server started
+    db_path: str
+    initial_db_path: str
+
+
+def server_output(proc: subprocess.Popen, output_dir: str) -> str:
+    """What a stopped server wrote: its log, else the output of the launcher."""
+    log_path = os.path.join(output_dir, "server.log")
+    if os.path.exists(log_path):
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        if text.strip():
+            return text
+    out, err = proc.communicate()
+    return (out or b"").decode(errors="replace") + (err or b"").decode(errors="replace")
+
+
+@contextlib.asynccontextmanager
+async def serve_scenario(
+    scenario: str,
+    envs_load_path: str,
+    output_dir: str,
+    db_schema_path: str = "./outputs/gen_db.jsonl",
+    sample_path: str = "./outputs/gen_sample.jsonl",
+    db_path: str | None = None,
+    timeout: float = 60.0,
+) -> AsyncGenerator[RunningServer]:
+    """Run the scenario's MCP server for the duration of the block.
+
+    The database is db_path if given, else a fresh one built from the schema
+    and sample data. Raises ServerStartError if the server does not come up
+    within timeout; the server is stopped when the block exits.
+    """
+    db_file = _prepare_database(
+        Config(
+            scenario=scenario,
+            envs_load_path=envs_load_path,
+            db_path=db_path,
+            db_schema_path=db_schema_path,
+            sample_path=sample_path,
+        ),
+        output_dir,
+    )
+    port = get_random_available_port()
+    proc = start_server_process(scenario, envs_load_path, db_file, port, output_dir)
+    try:
+        logger.info(f"Waiting for MCP server on port {port}...")
+        if not await async_wait_for_server(port, timeout=timeout, process=proc):
+            stop_server_process(proc)
+            output = server_output(proc, output_dir)
+            logger.error(f"MCP server output ends with:\n{output[-1000:]}")
+            raise ServerStartError(
+                f"MCP server for {scenario} did not start on port {port}", output
+            )
+        url = f"http://127.0.0.1:{port}/mcp"
+        logger.info(f"MCP server ready at {url}")
+        yield RunningServer(
+            url=url,
+            port=port,
+            db_path=db_file,
+            initial_db_path=os.path.join(output_dir, "initial.db"),
+        )
+    finally:
+        stop_server_process(proc)
 
 
 def run(config: Config):

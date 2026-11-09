@@ -1,16 +1,17 @@
+import asyncio
 import json
 import logging
 import os
 import shutil
-import signal
-import subprocess
 import sys
-import time
+import tempfile
+import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from tqdm import tqdm
 
+from awm.core.server import ServerStartError, serve_scenario
 from awm.gpt import GPTClient
 from awm.prompts import (
     ENVIRONMENT_GENERATION_SYSTEM_PROMPT,
@@ -18,14 +19,11 @@ from awm.prompts import (
 )
 from awm.tools import (
     format_db_schema,
-    get_random_available_port,
     normalize_scenario_name,
     tools_jsonl_load,
     tools_jsonl_save,
     tools_robust_json_loads,
     tools_token_count,
-    wait_for_server,
-    wait_port_free,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,116 +160,38 @@ def load_existing_env_results(output_path: str) -> dict[str, dict]:
     return existing_map
 
 
+async def _start_and_stop(
+    scenario: str, envs_path: str, output_dir: str, db_path: str
+) -> None:
+    async with serve_scenario(
+        scenario, envs_path, output_dir, db_path=db_path, timeout=30
+    ):
+        pass
+
+
 def test_run_specific_env(idx: int, env_config: dict) -> tuple[bool, str, dict]:
-    import random
-    import tempfile
-    import uuid
-
-    random.seed(idx)
+    """Whether the environment's server starts; on failure also its output."""
     scenario_name = normalize_scenario_name(env_config["scenario"])
-    unique_id = uuid.uuid4().hex[:8]
-
-    port = get_random_available_port()
-    wait_port_free(port)
-
-    temp_dir = tempfile.mkdtemp(prefix=f"env_test_{unique_id}")
+    temp_dir = tempfile.mkdtemp(prefix=f"env_test_{uuid.uuid4().hex[:8]}")
     temp_env_json = os.path.join(temp_dir, "test_env_code.jsonl")
     temp_db = os.path.join(temp_dir, "test_env.db")
-    temp_server = os.path.join(temp_dir, "temp_server.py")
-
-    logger.debug(f"{scenario_name} is testing on port {port}, temp_dir={temp_dir}")
+    logger.debug(f"{scenario_name} is testing, temp_dir={temp_dir}")
 
     try:
         tools_jsonl_save([env_config], temp_env_json)
-
         shutil.copyfile(env_config["db_path"], temp_db)
         os.chmod(temp_db, 0o644)
-
-        server_process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "awm.core.server",
-                "--port",
-                str(port),
-                "--scenario",
-                scenario_name,
-                "--db_path",
-                temp_db,
-                "--temp_server_path",
-                temp_server,
-                "--envs_load_path",
-                temp_env_json,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            text=True,
+        asyncio.run(_start_and_stop(scenario_name, temp_env_json, temp_dir, temp_db))
+    except ServerStartError as e:
+        logger.error(
+            f"{scenario_name} Server failed to start:\n{'=' * 60}\n{e.output[:2000]}\n{'=' * 60}"
         )
-
-        time.sleep(3)
-
-        if server_process.poll() is not None:
-            stdout, _ = server_process.communicate()
-            logger.error(
-                f"{scenario_name} Server process exited prematurely with code {server_process.returncode}"
-            )
-            if stdout:
-                output_preview = stdout[:2000] if len(stdout) > 2000 else stdout
-                logger.error(
-                    f"{scenario_name} Server output:\n{'=' * 60}\n{output_preview}\n{'=' * 60}"
-                )
-            return False, stdout, env_config
-
-        if not wait_for_server(port, timeout=30):
-            logger.error(
-                f"{scenario_name} Server failed to start on port {port} (timeout after 30s)"
-            )
-
-            try:
-                os.killpg(os.getpgid(server_process.pid), signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-
-            try:
-                stdout, _ = server_process.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(os.getpgid(server_process.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                stdout, _ = server_process.communicate()
-
-            if stdout:
-                output_preview = stdout[:2000] if len(stdout) > 2000 else stdout
-                logger.error(
-                    f"{scenario_name} Server output:\n{'=' * 60}\n{output_preview}\n{'=' * 60}"
-                )
-            else:
-                logger.error(f"{scenario_name} Server produced no output")
-
-            return False, stdout, env_config
-
-        logger.info(f"{scenario_name} Server started successfully on port {port}")
-
-        try:
-            os.killpg(os.getpgid(server_process.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-
-        try:
-            server_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(server_process.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            server_process.wait()
-
-        return True, "", env_config
-
+        return False, e.output, env_config
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+    logger.info(f"{scenario_name} Server started successfully")
+    return True, "", env_config
 
 
 def batch_test_environments(

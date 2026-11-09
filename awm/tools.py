@@ -185,11 +185,19 @@ async def check_mcp_server(
     return (True, len(tools), tools, None)
 
 
-async def async_wait_for_server(port: int, timeout: float = 60.0) -> bool:
-    """Wait for an MCP server to become available on the given port."""
+async def async_wait_for_server(
+    port: int, timeout: float = 60.0, process: subprocess.Popen | None = None
+) -> bool:
+    """Wait for an MCP server to become available on the given port.
+
+    process: the server's process; the wait gives up as soon as it exits.
+    """
     start_time = time.time()
     last_err = None
     while time.time() - start_time < timeout:
+        if process is not None and process.poll() is not None:
+            logger.error(f"MCP server process exited with code {process.returncode}")
+            return False
         try:
             running, tools_count, tools, err = await check_mcp_server(
                 url=f"http://localhost:{port}/mcp", timeout=10
@@ -207,9 +215,11 @@ async def async_wait_for_server(port: int, timeout: float = 60.0) -> bool:
     return False
 
 
-def wait_for_server(port: int, timeout: float = 60.0) -> bool:
+def wait_for_server(
+    port: int, timeout: float = 60.0, process: subprocess.Popen | None = None
+) -> bool:
     """Sync wrapper around async_wait_for_server."""
-    return asyncio.run(async_wait_for_server(port, timeout=timeout))
+    return asyncio.run(async_wait_for_server(port, timeout=timeout, process=process))
 
 
 def kill_process_on_port(port):

@@ -33,28 +33,10 @@ def test_without_view_tools_and_calls_pass_through():
     assert presented.resolve("anything", {"a": 1}) == ("anything", {"a": 1})
 
 
-def test_renamed_tool_and_params_are_mapped_back():
-    view = ToolView(
-        rename_tools={"create_order": "createOrder"},
-        rename_params={"create_order": {"product_id": "productId"}},
-    )
-    presented = PresentedTools(TOOLS, view)
-    order = presented.tools[0]
-    assert order["name"] == "createOrder"
-    assert list(order["inputSchema"]["properties"]) == ["productId", "note"]
-    assert order["inputSchema"]["required"] == ["productId"]
-    assert presented.resolve("createOrder", {"productId": 3, "note": "x"}) == (
-        "create_order",
-        {"product_id": 3, "note": "x"},
-    )
-
-
-def test_original_name_of_renamed_tool_is_rejected():
-    presented = PresentedTools(
-        TOOLS, ToolView(rename_tools={"create_order": "createOrder"})
-    )
+def test_unknown_tool_is_rejected():
+    presented = PresentedTools(TOOLS, ToolView(shuffle_seed=1))
     with pytest.raises(ToolCallRejected):
-        presented.resolve("create_order", {})
+        presented.resolve("createOrder", {})
 
 
 def test_hidden_and_distractor_tools_are_rejected():

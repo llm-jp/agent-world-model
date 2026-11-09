@@ -1,9 +1,21 @@
-"""Parts that change how the tools are presented; the expected behaviour stays the same."""
+"""Parts that change how the tools are presented; the expected behaviour stays the same.
+
+Renaming tools or parameters is not a view; see env_parts.py.
+"""
 
 import json
 import random
+from typing import Any
 
-from awm.core.augment.draft import Draft, LLMStep, Part, properties, required
+from awm.core.augment.draft import (
+    Draft,
+    LLMStep,
+    Part,
+    Rejection,
+    properties,
+    required,
+)
+from awm.core.tool_view import ToolView
 from awm.prompts import AUG_TOOL_DOC_PARAPHRASE_PROMPT
 
 # optional parameters added by add_params; the call drops them before the server
@@ -25,49 +37,9 @@ EXTRA_PARAM_POOL = {
 MAX_DISTRACTOR_TOOLS = 3
 
 
-def to_camel(name: str) -> str:
-    head, *rest = name.split("_")
-    return head + "".join(part[:1].upper() + part[1:] for part in rest)
-
-
-def to_pascal(name: str) -> str:
-    return "".join(part[:1].upper() + part[1:] for part in name.split("_"))
-
-
-class ToolRename(Part):
-    name = "tool_rename"
-    needs_tools = True
-
-    def apply(self, draft: Draft, rng: random.Random) -> Draft | None:
-        if draft.view.rename_tools:
-            return None
-        style = rng.choice([to_camel, to_pascal])
-        renames = {n: style(n) for n in draft.tool_names if style(n) != n}
-        presented = [renames.get(n, n) for n in draft.tool_names] + [
-            t["name"] for t in draft.view.distractor_tools
-        ]
-        if not renames or len(set(presented)) < len(presented):
-            return None
-        return draft.with_view(self.name, rename_tools=renames)
-
-
-class ParamRename(Part):
-    name = "param_rename"
-    needs_tools = True
-
-    def apply(self, draft: Draft, rng: random.Random) -> Draft | None:
-        if draft.view.rename_params:
-            return None
-        renames = {}
-        for tool in draft.tools or []:
-            params = list(properties(tool))
-            mapping = {p: to_camel(p) for p in params if to_camel(p) != p}
-            extra = set(draft.view.extra_params.get(tool["name"], {}))
-            if mapping and not set(mapping.values()) & (set(params) | extra):
-                renames[tool["name"]] = mapping
-        if not renames:
-            return None
-        return draft.with_view(self.name, rename_params=renames)
+def presenting(draft: Draft, part: str, **view: Any) -> Draft:
+    """The draft whose tools are presented with the given view settings."""
+    return draft.evolve(part, view=ToolView(**view))
 
 
 class Shuffle(Part):
@@ -75,9 +47,9 @@ class Shuffle(Part):
     needs_tools = True
 
     def apply(self, draft: Draft, rng: random.Random) -> Draft | None:
-        if draft.view.shuffle_seed is not None or len(draft.presented_names) < 2:
+        if len(draft.tool_names) < 2:
             return None
-        return draft.with_view(self.name, shuffle_seed=rng.randrange(1 << 30))
+        return presenting(draft, self.name, shuffle_seed=rng.randrange(1 << 30))
 
 
 class AddParams(Part):
@@ -85,22 +57,15 @@ class AddParams(Part):
     needs_tools = True
 
     def apply(self, draft: Draft, rng: random.Random) -> Draft | None:
-        extra = {k: dict(v) for k, v in draft.view.extra_params.items()}
-        added = False
+        extra = {}
         for tool in draft.tools or []:
-            name = tool["name"]
-            renames = draft.view.rename_params.get(name, {})
-            taken = {renames.get(p, p) for p in properties(tool)} | set(
-                extra.get(name, {})
-            )
-            free = [p for p in EXTRA_PARAM_POOL if p not in taken]
+            free = [p for p in EXTRA_PARAM_POOL if p not in properties(tool)]
             if free:
                 param = rng.choice(free)
-                extra.setdefault(name, {})[param] = EXTRA_PARAM_POOL[param]
-                added = True
-        if not added:
+                extra[tool["name"]] = {param: EXTRA_PARAM_POOL[param]}
+        if not extra:
             return None
-        return draft.with_view(self.name, extra_params=extra)
+        return presenting(draft, self.name, extra_params=extra)
 
 
 class DropOptionalParams(Part):
@@ -114,23 +79,19 @@ class DropOptionalParams(Part):
             used.setdefault(call["tool_name"], set()).update(
                 call.get("arguments") or {}
             )
-        drop = {k: list(v) for k, v in draft.view.drop_params.items()}
-        dropped = False
+        drop = {}
         for tool in draft.tools or []:
             name = tool["name"]
             optional = [
                 p
                 for p in properties(tool)
-                if p not in required(tool)
-                and p not in used.get(name, set())
-                and p not in drop.get(name, [])
+                if p not in required(tool) and p not in used.get(name, set())
             ]
             if optional:
-                drop.setdefault(name, []).extend(optional)
-                dropped = True
-        if not dropped:
+                drop[name] = optional
+        if not drop:
             return None
-        return draft.with_view(self.name, drop_params=drop)
+        return presenting(draft, self.name, drop_params=drop)
 
 
 class DistractorTools(Part):
@@ -138,7 +99,7 @@ class DistractorTools(Part):
     needs_tools = True
 
     def apply(self, draft: Draft, rng: random.Random) -> Draft | None:
-        taken = set(draft.presented_names) | set(draft.tool_names)
+        taken = set(draft.tool_names)
         candidates = [t for t in draft.other_tools if t["name"] not in taken]
         if not candidates:
             return None
@@ -151,18 +112,14 @@ class DistractorTools(Part):
             }
             for t in picked
         ]
-        return draft.with_view(
-            self.name, distractor_tools=[*draft.view.distractor_tools, *distractors]
-        )
+        return presenting(draft, self.name, distractor_tools=distractors)
 
 
 class ToolDocParaphrase(Part):
     name = "tool_doc_paraphrase"
     needs_tools = True
 
-    def apply(self, draft: Draft, rng: random.Random) -> LLMStep | None:
-        if draft.view.tool_descriptions:
-            return None
+    def apply(self, draft: Draft, rng: random.Random) -> LLMStep[Draft]:
         docs = {
             t["name"]: {
                 "description": t.get("description", ""),
@@ -173,10 +130,12 @@ class ToolDocParaphrase(Part):
             for t in draft.tools or []
         }
 
-        def finish(response: dict) -> Draft | None:
+        def finish(response: dict) -> Draft | Rejection:
             rewritten = response.get("tools")
             if not isinstance(rewritten, dict) or set(rewritten) != set(docs):
-                return None
+                return Rejection(
+                    f'"tools" must have exactly these keys: {sorted(docs)}'
+                )
             tool_descriptions = {}
             param_descriptions = {}
             for name, doc in docs.items():
@@ -184,18 +143,23 @@ class ToolDocParaphrase(Part):
                 if not isinstance(new, dict) or not isinstance(
                     new.get("description"), str
                 ):
-                    return None
+                    return Rejection(f'"{name}" needs a string "description".')
                 new_params = new.get("parameters") or {}
                 if not isinstance(new_params, dict) or set(new_params) != set(
                     doc["parameters"]
                 ):
-                    return None
+                    return Rejection(
+                        f'"parameters" of "{name}" must have exactly these keys: {sorted(doc["parameters"])}'
+                    )
                 if not all(isinstance(v, str) for v in new_params.values()):
-                    return None
+                    return Rejection(
+                        f'Every parameter description of "{name}" must be a string.'
+                    )
                 tool_descriptions[name] = new["description"]
                 if new_params:
                     param_descriptions[name] = new_params
-            return draft.with_view(
+            return presenting(
+                draft,
                 self.name,
                 tool_descriptions=tool_descriptions,
                 param_descriptions=param_descriptions,
@@ -204,4 +168,8 @@ class ToolDocParaphrase(Part):
         prompt = AUG_TOOL_DOC_PARAPHRASE_PROMPT.format(
             tools_json=json.dumps(docs, ensure_ascii=False)
         )
-        return LLMStep(draft, [{"role": "user", "content": prompt}], finish)
+        return LLMStep(
+            [{"role": "user", "content": prompt}],
+            finish,
+            label=f"{draft.scenario} task {draft.source_task_idx}",
+        )

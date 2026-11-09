@@ -1,16 +1,18 @@
 """Parts after which the agent has to hold back until a scripted follow-up turn."""
 
+import dataclasses
 import random
 
 from awm.core.augment.draft import (
     Draft,
     LLMStep,
     Part,
+    Rejection,
     param_values_in_task,
     rewritten_task,
 )
-from awm.core.augment.task_parts import rewrite_messages
-from awm.prompts import AUG_MISS_PARAM_PROMPT
+from awm.core.augment.task_parts import rewrite_step
+from awm.prompts import AUG_MISS_FUNC_FOLLOWUP, AUG_MISS_PARAM_PROMPT
 
 
 class MissFunc(Part):
@@ -21,11 +23,10 @@ class MissFunc(Part):
     needs_tools = True
 
     def apply(self, draft: Draft, rng: random.Random) -> Draft | None:
-        names = set(draft.tool_names) - set(draft.hidden_tools)
         called = [
             c["tool_name"]
             for c in draft.reference_calls or []
-            if c["tool_name"] in names
+            if c["tool_name"] in draft.tool_names
         ]
         if not called:
             return None
@@ -33,11 +34,9 @@ class MissFunc(Part):
         hidden = called[-1]
         return draft.evolve(
             self.name,
-            hidden_tools=[*draft.hidden_tools, hidden],
-            forbidden_calls=[
-                *draft.forbidden_calls,
-                {"tool_name": hidden, "param": None},
-            ],
+            hidden_tool=hidden,
+            followup=AUG_MISS_FUNC_FOLLOWUP.format(tool_name=hidden),
+            forbidden_calls=[{"tool_name": hidden, "param": None}],
         )
 
 
@@ -47,37 +46,29 @@ class MissParam(Part):
     name = "miss_param"
     needs_reference = True
 
-    def apply(self, draft: Draft, rng: random.Random) -> LLMStep | None:
-        triples = [
-            t
-            for t in param_values_in_task(draft.task, draft.reference_calls or [])
-            if t[2] not in draft.required_mentions
-        ]
+    def apply(self, draft: Draft, rng: random.Random) -> LLMStep[Draft] | None:
+        triples = param_values_in_task(draft.task, draft.reference_calls or [])
         if not triples:
             return None
         tool_name, param, value = rng.choice(triples)
         rewritten = draft.evolve(
             self.name,
-            removed_values=[*draft.removed_values, value],
-            forbidden_calls=[
-                *draft.forbidden_calls,
-                {"tool_name": tool_name, "param": param},
-            ],
+            removed_value=value,
+            forbidden_calls=[{"tool_name": tool_name, "param": param}],
         )
 
-        def finish(response: dict) -> Draft | None:
+        def finish(response: dict) -> Draft | Rejection:
             task = rewritten_task(rewritten, response)
+            if isinstance(task, Rejection):
+                return task
             followup = response.get("followup")
-            if task is None or not isinstance(followup, str) or value not in followup:
-                return None
-            return rewritten.replace(
-                task=task, followups=[*rewritten.followups, followup.strip()]
-            )
+            if not isinstance(followup, str) or value not in followup:
+                return Rejection(
+                    f'"followup" must be a string that contains "{value}" verbatim.'
+                )
+            return dataclasses.replace(rewritten, task=task, followup=followup.strip())
 
         prompt = AUG_MISS_PARAM_PROMPT.format(
-            task=draft.task,
-            value=value,
-            param=param,
-            tool_name=draft.presented_name(tool_name),
+            task=draft.task, value=value, param=param, tool_name=tool_name
         )
-        return LLMStep(draft, rewrite_messages(prompt), finish)
+        return rewrite_step(draft, prompt, finish)

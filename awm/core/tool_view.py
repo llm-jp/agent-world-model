@@ -1,9 +1,9 @@
 """Change how MCP tools are presented to the agent without touching the server.
 
-A ToolView rewrites the `list_tools` result (names, descriptions, parameters,
-extra and hidden tools, order) and maps the agent's calls back to the tool
-names and arguments the server knows. All keys of a ToolView refer to the
-original tool and parameter names.
+A ToolView rewrites the `list_tools` result (descriptions, parameters, extra
+and hidden tools, order) and turns the agent's calls back into calls the
+server accepts. Renamed tools are not a view: they get an environment of their
+own (awm/core/augment/env_parts.py).
 """
 
 import copy
@@ -16,9 +16,6 @@ class ToolView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hide_tools: list[str] = Field(default_factory=list)
-    rename_tools: dict[str, str] = Field(default_factory=dict)
-    # tool -> {param -> presented param}
-    rename_params: dict[str, dict[str, str]] = Field(default_factory=dict)
     tool_descriptions: dict[str, str] = Field(default_factory=dict)
     # tool -> {param -> presented description}
     param_descriptions: dict[str, dict[str, str]] = Field(default_factory=dict)
@@ -52,6 +49,8 @@ class TaskMeta(BaseModel):
     # augmentation parts applied to the source task, in order
     augmentations: list[str]
     source_task_idx: int
+    # scenario of the source task when it differs (environments with renamed tools)
+    source_scenario: str | None = None
     tool_view: ToolView | None = None
     turns: list[Turn] = Field(default_factory=list)
 
@@ -67,19 +66,14 @@ class PresentedTools:
         self.view = view
         self.original_names = [t["name"] for t in tools]
         self.tools = tools if view is None else self._present(tools, view)
-        self._to_original: dict[str, str] = {}
-        # presented names of the server's own parameters, per original tool
+        # the server's own parameters of every tool the view offers
         self._real_params: dict[str, set[str]] = {}
         if view is not None:
             for tool in tools:
-                name = tool["name"]
-                if name in view.hide_tools:
-                    continue
-                self._to_original[view.rename_tools.get(name, name)] = name
-                renames = view.rename_params.get(name, {})
-                self._real_params[name] = {
-                    renames.get(p, p) for p in _schema_of(tool).get("properties", {})
-                }
+                if tool["name"] not in view.hide_tools:
+                    self._real_params[tool["name"]] = set(
+                        _schema_of(tool).get("properties", {})
+                    )
 
     @staticmethod
     def _present(tools: list[dict], view: ToolView) -> list[dict]:
@@ -99,9 +93,6 @@ class PresentedTools:
             for param, desc in view.param_descriptions.get(name, {}).items():
                 if param in properties:
                     properties[param]["description"] = desc
-            renames = view.rename_params.get(name, {})
-            properties = {renames.get(p, p): s for p, s in properties.items()}
-            required = [renames.get(p, p) for p in required]
             for param, param_schema in view.extra_params.get(name, {}).items():
                 properties.setdefault(param, copy.deepcopy(param_schema))
 
@@ -116,7 +107,7 @@ class PresentedTools:
                 schema["required"] = required
             presented.append(
                 {
-                    "name": view.rename_tools.get(name, name),
+                    "name": name,
                     "description": view.tool_descriptions.get(
                         name, tool.get("description", "")
                     ),
@@ -135,13 +126,11 @@ class PresentedTools:
         if view is None:
             return tool_name, arguments
 
-        original = self._to_original.get(tool_name)
-        if original is None:
+        real = self._real_params.get(tool_name)
+        if real is None:
             raise ToolCallRejected(
                 f"Unknown tool '{tool_name}'. Call list_tools to see the available tools."
             )
 
-        back = {p: o for o, p in view.rename_params.get(original, {}).items()}
-        extra = set(view.extra_params.get(original, {})) - self._real_params[original]
-        resolved = {back.get(k, k): v for k, v in arguments.items() if k not in extra}
-        return original, resolved
+        extra = set(view.extra_params.get(tool_name, {})) - real
+        return tool_name, {k: v for k, v in arguments.items() if k not in extra}

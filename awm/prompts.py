@@ -1002,7 +1002,103 @@ AUG_MISS_FUNC_FOLLOWUP = (
     "The tool {tool_name} is now available. Please continue with my request."
 )
 
-# Tool definitions are part of the environment, so this prompt stays in English.
+AUG_TASK_RENAME_PROMPT = """The tools and parameters that the following user request refers to have been renamed.
+
+Request: {task}
+
+Renames (old name: new name): {renames}
+
+Requirements:
+1. Replace every reference to an old name, in any form (e.g. "create order" for create_order), with the new name written verbatim
+2. Change nothing else: keep the wording, meaning, conditions and values
+3. Keep every one of these values verbatim: {keep_values}
+
+Return {{"task": "<rewritten request>"}}"""
+
+AUG_TASK_FEEDBACK_PROMPT = """Your rewrite cannot be used because of these problems:
+{problems}
+
+Rewrite the original request again following the first instructions, and fix every problem above. Return only the JSON object in the same format."""
+
+AUG_SELF_CHECK_PROMPT = """Check whether your rewrite is consistent with what the agent is expected to do. The agent sees only the user messages below and the tools; the reference tool calls are how the original request was solved.
+
+First user message: {task}
+
+Follow-up user message, sent after the agent ends its first turn: {followup}
+
+Expected behaviour of the agent: {behaviour}
+
+Reference tool calls:
+{calls}
+
+Check that:
+1. The user messages ask for exactly what the reference calls do: the same targets, conditions and values, nothing extra and nothing missing
+2. Every argument value of the reference calls is stated in the user messages, or can be obtained from the results of earlier calls, by the time the agent needs it
+3. The user messages do not contradict each other or the reference calls, and read naturally as one user's dialogue
+4. Your rewrite still does what the first instructions asked for
+
+Return {{"consistent": true, "problems": []}} if every check passes, and otherwise {{"consistent": false, "problems": ["<a concrete problem and how to fix it>", ...]}}"""
+
+AUG_SELF_CHECK_NO_FOLLOWUP = "(none)"
+
+AUG_SELF_CHECK_SINGLE_TURN_BEHAVIOUR = (
+    "completes the request in a single turn by making the reference calls."
+)
+
+AUG_SELF_CHECK_FOLLOWUP_BEHAVIOUR = """cannot complete the request in the first turn, so it must not change any data and should ask the user for what is missing; in the first turn it must not make these calls (param null means any call of the tool): {forbidden_calls}. After the follow-up message it completes the request by making the reference calls."""
+
+# Tool definitions are part of the environment, so the tool prompts stay in English.
+AUG_TOOL_FEEDBACK_PROMPT = """Your reply cannot be used because of these problems:
+{problems}
+
+Answer again following the first instructions, and fix every problem above. Return only the JSON object in the same format."""
+
+AUG_TOOL_RENAME_PROMPT = """Give each of the following tools a new name.
+
+Tools (JSON, name to description): {tools_json}
+
+Requirements:
+1. Each new name must still describe what the tool does, but use different words from the original name (e.g. synonyms, another verb, another word order); changing only the case or the separators is not enough
+2. Use only ASCII letters, digits and underscores, start with a letter, and keep each name at most 64 characters
+3. Every tool gets a different name, and no new name equals the original name of another tool
+
+Return {{"tools": {{"<original name>": "<new name>"}}}}"""
+
+AUG_ENV_RENAME_PROMPT = """Rename tools and parameters of the following FastAPI server. An MCP bridge exposes each route as a tool: the tool name is the route's operation_id, and the tool's parameters are the route's path, query and body parameters.
+
+Renames (JSON): {renames_json}
+"tools" maps old tool names to new ones; "params" maps, per old tool name, old parameter names to new ones.
+
+Server code:
+```python
+{code}
+```
+
+Requirements:
+1. Every tool is exposed under its new name: its operation_id is the new name
+2. Every renamed parameter is accepted under its new name only. Keep Python variable names and database tables and columns unchanged where you can, e.g. with alias= in Query(...), Path(...) or Field(...), or by renaming a path parameter in both the route path and the function signature
+3. Every text the client can see that refers to an old name uses the new name: summaries, descriptions, docstrings, Field descriptions, error messages and other response texts
+4. Nothing else changes: the behaviour, the database access and the data in the responses stay the same (field names in responses may follow the renamed parameters)
+
+Return the changes as exact text replacements, applied in order to the code above:
+{{"edits": [{{"old": "<exact text of the current code, long enough to occur exactly once>", "new": "<replacement>"}}]}}"""
+
+AUG_ENV_RENAME_CHECK_PROMPT = """Check your changes to the server code.
+
+Renames (JSON): {renames_json}
+
+Diff of the server code:
+```diff
+{diff}
+```
+
+Check that:
+1. Every text the client can see that refers to an old tool or parameter name, in any form (e.g. "create order" for create_order), now uses the new name
+2. Apart from the names, the behaviour, the database access and the data in the responses are unchanged
+3. No change is unrelated to the renames
+
+Return {{"consistent": true, "problems": []}} if every check passes, and otherwise {{"consistent": false, "problems": ["<a concrete problem and how to fix it>", ...]}}"""
+
 AUG_TOOL_DOC_PARAPHRASE_PROMPT = """Rewrite the descriptions of the following tools and their parameters with different wording while keeping their meaning exactly the same.
 
 Tools (JSON): {tools_json}
@@ -1021,10 +1117,16 @@ if os.environ.get("AWM_SYN_LANG", "en") == "ja":
     from awm.prompts_ja import (  # noqa: F401
         AUG_MISS_FUNC_FOLLOWUP,
         AUG_MISS_PARAM_PROMPT,
+        AUG_SELF_CHECK_FOLLOWUP_BEHAVIOUR,
+        AUG_SELF_CHECK_NO_FOLLOWUP,
+        AUG_SELF_CHECK_PROMPT,
+        AUG_SELF_CHECK_SINGLE_TURN_BEHAVIOUR,
         AUG_TASK_AMBIGUOUS_PROMPT,
         AUG_TASK_DISTRACTOR_NAMES_PROMPT,
+        AUG_TASK_FEEDBACK_PROMPT,
         AUG_TASK_NO_TOOL_NAMES_PROMPT,
         AUG_TASK_PARAPHRASE_PROMPT,
+        AUG_TASK_RENAME_PROMPT,
         AUG_TASK_REWRITE_SYSTEM_PROMPT,
         SAMPLE_DATA_GENERATION_SYSTEM_PROMPT,
         SAMPLE_DATA_GENERATION_USER_PROMPT,

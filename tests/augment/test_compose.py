@@ -1,118 +1,98 @@
 import shutil
 
 import pytest
-from helpers import CALLS, make_db, make_draft, scripted_llm
+from helpers import CALLS, TASK, make_db, make_draft, scripted_llm
 
 from awm.core.augment.compose import (
-    apply_recipe,
+    PARTS,
+    apply_part,
+    check_part_names,
     generate_variants,
     merge_variants,
-    parse_recipe,
-    strip_augmented,
 )
 from awm.core.augment.draft import Variant, finalize, values_in_task
 from awm.core.tool_view import PresentedTools, TaskMeta
 from awm.core.verify import run_verifier
+from awm.tools import strip_augmented
 
 
-def replies(step) -> list[dict]:
-    """Removing one value (what miss_param asks for), then a faithful rewrite.
-
-    The faithful rewrite also mentions every presented tool name, which is what
-    task_distractor_names asks for.
-    """
-    task = step.draft.task
-    removals = [
-        {"task": task.replace(v, "it"), "followup": f"It is {v}."}
-        for v in values_in_task(task, CALLS)
+def removals(step) -> list[dict]:
+    """Replies that each remove one value, which is what miss_param asks for."""
+    return [
+        {"task": TASK.replace(v, "it"), "followup": f"It is {v}."}
+        for v in values_in_task(TASK, CALLS)
     ]
-    names = ", ".join(step.draft.presented_names)
-    return [*removals, {"task": f"Please: {task} (not needed: {names})"}]
 
 
-LLM = scripted_llm(replies)
+LLM = scripted_llm(removals)
 
 
-def test_parse_recipe_rejects_unknown_and_repeated_parts():
-    assert [p.name for p in parse_recipe("tool_rename + miss_func")] == [
-        "tool_rename",
-        "miss_func",
-    ]
-    for bad in ["", "tool_rename+nope", "shuffle+shuffle"]:
-        with pytest.raises(ValueError):
-            parse_recipe(bad)
-
-
-def test_combined_recipe_keeps_every_part(tmp_path):
-    recipe = "tool_rename+param_rename+task_paraphrase+miss_func+miss_param"
-    [draft] = apply_recipe(recipe, [make_draft()], seed=0, run_llm=LLM)
-    assert draft.applied == recipe.split("+")
-    variant = finalize(draft)
-    meta = variant.meta
-
-    # first turn: renamed tools, create_order hidden
-    assert meta.tool_view is not None
-    first = PresentedTools(draft.tools or [], meta.tool_view)
-    presented_order = draft.presented_name("create_order")
-    assert presented_order not in [t["name"] for t in first.tools]
-    # follow-up turn: the value removed by miss_param and the revealed tool
-    [turn] = meta.turns
-    assert draft.removed_values[0] in turn.user
-    assert presented_order in turn.user
-    assert turn.tool_view is not None
-    second = PresentedTools(draft.tools or [], turn.tool_view)
-    assert second.resolve(presented_order, {"productId": 42}) == (
-        "create_order",
-        {"product_id": 42},
-    )
-    assert draft.removed_values[0] not in variant.task
-
-    # reward: waited in the first turn, then completed
-    initial = make_db(tmp_path / "initial.db", [])
-    turn0 = tmp_path / "turn_0.db"
+def grade(variant: Variant, tmp_path, calls: list[dict]) -> str:
+    """Reward of a run that kept the first turn unchanged, then ordered 42."""
+    run_dir = tmp_path / f"run_{len(list(tmp_path.iterdir()))}"
+    run_dir.mkdir()
+    initial = make_db(run_dir / "initial.db", [])
+    turn0 = run_dir / "turn_0.db"
     shutil.copy2(initial, turn0)
-    final = make_db(tmp_path / "final.db", [42])
-    calls = [{"turn": 1, "tool_name": "create_order", "arguments": {"product_id": 42}}]
+    final = make_db(run_dir / "final.db", [42])
     entry = {"verification": {"code": variant.verifier_code}}
     reward, _ = run_verifier(entry, "code", initial, final, "", [str(turn0)], calls)
-    assert reward == "complete"
+    return reward
 
 
-def test_order_of_parts_changes_what_later_parts_see():
-    # distractor tools added first become candidates for distractor names
-    [draft] = apply_recipe(
-        "distractor_tools+task_distractor_names", [make_draft()], seed=0, run_llm=LLM
+def test_check_part_names_rejects_unknown_parts():
+    check_part_names([*PARTS, "tool_rename", "param_rename"])
+    with pytest.raises(ValueError):
+        check_part_names(["shuffle", "tool_rename+miss_func"])
+
+
+def test_miss_func_variant_restores_the_tool_after_the_followup(tmp_path):
+    [draft] = apply_part(PARTS["miss_func"], [make_draft()], seed=0, run_llm=LLM)
+    variant = finalize(draft)
+    meta = variant.meta
+    assert meta.tool_view is not None
+    first = PresentedTools(draft.tools or [], meta.tool_view)
+    assert "create_order" not in [t["name"] for t in first.tools]
+    [turn] = meta.turns
+    assert turn.tool_view is not None
+    second = PresentedTools(draft.tools or [], turn.tool_view)
+    assert "create_order" in [t["name"] for t in second.tools]
+
+    later = [{"turn": 1, "tool_name": "create_order", "arguments": {}}]
+    early = [{"turn": 0, "tool_name": "create_order", "arguments": {}}]
+    assert grade(variant, tmp_path, later) == "complete"
+    assert grade(variant, tmp_path, early) == "others"
+
+
+def test_miss_param_variant_gives_the_value_in_the_followup(tmp_path):
+    [draft] = apply_part(PARTS["miss_param"], [make_draft()], seed=0, run_llm=LLM)
+    variant = finalize(draft)
+    assert draft.removed_value is not None
+    assert draft.removed_value not in variant.task
+    [turn] = variant.meta.turns
+    assert draft.removed_value in turn.user
+    assert grade(variant, tmp_path, []) == "complete"
+
+
+def test_part_drops_drafts_it_cannot_handle():
+    assert (
+        apply_part(PARTS["miss_func"], [make_draft(reference_calls=None)], 0, LLM) == []
     )
-    assert set(draft.required_mentions) <= set(draft.presented_names)
 
 
-def test_rewrite_after_miss_param_must_not_bring_the_value_back():
-    def bring_back(step):
-        removed = step.draft.removed_values
-        return [{"task": step.draft.task + " " + " ".join(removed)}]
-
-    [after_miss] = apply_recipe("miss_param", [make_draft()], seed=0, run_llm=LLM)
-    out = apply_recipe("task_paraphrase", [after_miss], 0, scripted_llm(bring_back))
-    assert out == []
-
-
-def test_recipe_drops_drafts_a_part_cannot_handle():
-    assert apply_recipe("miss_func", [make_draft(reference_calls=None)], 0, LLM) == []
-
-
-def test_generate_variants_limits_tasks_per_scenario_and_recipe():
+def test_generate_variants_limits_tasks_per_scenario_and_part():
     drafts = [make_draft(source_task_idx=i) for i in range(5)]
     drafts.append(make_draft(scenario="Bank", source_task_idx=0))
-    variants = generate_variants(["shuffle", "add_params+miss_func"], drafts, 2, 0, LLM)
+    variants = generate_variants(["shuffle", "miss_func"], drafts, 2, 0, LLM)
     per_key: dict[tuple[str, str], int] = {}
     for v in variants:
-        key = (v.scenario, "+".join(v.meta.augmentations))
+        key = (v.scenario, v.meta.augmentations[0])
         per_key[key] = per_key.get(key, 0) + 1
     assert per_key == {
         ("Shop", "shuffle"): 2,
         ("Bank", "shuffle"): 1,
-        ("Shop", "add_params+miss_func"): 2,
-        ("Bank", "add_params+miss_func"): 1,
+        ("Shop", "miss_func"): 2,
+        ("Bank", "miss_func"): 1,
     }
 
 

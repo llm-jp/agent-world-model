@@ -1,19 +1,27 @@
 """Parts that rewrite the task text with an LLM; the expected behaviour stays the same."""
 
+import dataclasses
 import json
 import random
+from collections.abc import Callable
 
 from awm.core.augment.draft import (
     Draft,
     LLMStep,
     Part,
+    Rejection,
     keep_values,
     mentioned_tool_names,
     rewritten_task,
 )
 from awm.prompts import (
+    AUG_SELF_CHECK_FOLLOWUP_BEHAVIOUR,
+    AUG_SELF_CHECK_NO_FOLLOWUP,
+    AUG_SELF_CHECK_PROMPT,
+    AUG_SELF_CHECK_SINGLE_TURN_BEHAVIOUR,
     AUG_TASK_AMBIGUOUS_PROMPT,
     AUG_TASK_DISTRACTOR_NAMES_PROMPT,
+    AUG_TASK_FEEDBACK_PROMPT,
     AUG_TASK_NO_TOOL_NAMES_PROMPT,
     AUG_TASK_PARAPHRASE_PROMPT,
     AUG_TASK_REWRITE_SYSTEM_PROMPT,
@@ -22,11 +30,48 @@ from awm.prompts import (
 MAX_DISTRACTOR_NAMES = 2
 
 
-def rewrite_messages(prompt: str) -> list[dict]:
-    return [
+def dialogue_check_prompt(draft: Draft) -> str:
+    """Asks whether the draft's user messages fit what the agent is expected to do."""
+    if draft.followup is not None:
+        behaviour = AUG_SELF_CHECK_FOLLOWUP_BEHAVIOUR.format(
+            forbidden_calls=json.dumps(draft.forbidden_calls, ensure_ascii=False)
+        )
+    else:
+        behaviour = AUG_SELF_CHECK_SINGLE_TURN_BEHAVIOUR
+    calls = [
+        {"tool_name": c["tool_name"], "arguments": c.get("arguments") or {}}
+        for c in draft.reference_calls or []
+    ]
+    return AUG_SELF_CHECK_PROMPT.format(
+        task=draft.task,
+        followup=draft.followup or AUG_SELF_CHECK_NO_FOLLOWUP,
+        behaviour=behaviour,
+        calls=json.dumps(calls, ensure_ascii=False, indent=2),
+    )
+
+
+def rewrite_step(
+    draft: Draft, prompt: str, finish: Callable[[dict], Draft | Rejection]
+) -> LLMStep[Draft]:
+    """A task rewrite, checked against the reference run before it is accepted."""
+    messages = [
         {"role": "system", "content": AUG_TASK_REWRITE_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
+    return LLMStep(
+        messages,
+        finish,
+        label=f"{draft.scenario} task {draft.source_task_idx}",
+        check_prompt=dialogue_check_prompt,
+        feedback_prompt=AUG_TASK_FEEDBACK_PROMPT,
+    )
+
+
+def accept_task(draft: Draft, response: dict) -> Draft | Rejection:
+    task = rewritten_task(draft, response)
+    if isinstance(task, Rejection):
+        return task
+    return dataclasses.replace(draft, task=task)
 
 
 def _dump(values: list[str]) -> str:
@@ -38,14 +83,16 @@ class TaskParaphrase(Part):
     needs_reference = True
     template = AUG_TASK_PARAPHRASE_PROMPT
 
-    def apply(self, draft: Draft, rng: random.Random) -> LLMStep:
-        def finish(response: dict) -> Draft | None:
-            task = rewritten_task(draft, response)
-            return None if task is None else draft.evolve(self.name, task=task)
+    def apply(self, draft: Draft, rng: random.Random) -> LLMStep[Draft]:
+        rewritten = draft.evolve(self.name)
 
-        keep = keep_values(draft) + draft.required_mentions
-        prompt = self.template.format(task=draft.task, keep_values=_dump(keep))
-        return LLMStep(draft, rewrite_messages(prompt), finish)
+        def finish(response: dict) -> Draft | Rejection:
+            return accept_task(rewritten, response)
+
+        prompt = self.template.format(
+            task=draft.task, keep_values=_dump(keep_values(draft))
+        )
+        return rewrite_step(draft, prompt, finish)
 
 
 class TaskAmbiguous(TaskParaphrase):
@@ -58,28 +105,21 @@ class TaskNoToolNames(Part):
     needs_reference = True
     needs_tools = True
 
-    def apply(self, draft: Draft, rng: random.Random) -> LLMStep | None:
-        names = sorted(set(draft.tool_names) | set(draft.presented_names))
-        mentioned = [
-            n
-            for n in mentioned_tool_names(draft.task, names)
-            if n not in draft.required_mentions
-        ]
+    def apply(self, draft: Draft, rng: random.Random) -> LLMStep[Draft] | None:
+        mentioned = mentioned_tool_names(draft.task, draft.tool_names)
         if not mentioned:
             return None
-        banned = sorted(set(draft.banned_mentions) | set(mentioned))
-        rewritten = draft.evolve(self.name, banned_mentions=banned)
+        rewritten = draft.evolve(self.name, banned_mentions=mentioned)
 
-        def finish(response: dict) -> Draft | None:
-            task = rewritten_task(rewritten, response)
-            return None if task is None else rewritten.replace(task=task)
+        def finish(response: dict) -> Draft | Rejection:
+            return accept_task(rewritten, response)
 
         prompt = AUG_TASK_NO_TOOL_NAMES_PROMPT.format(
             task=draft.task,
             tool_names=_dump(mentioned),
-            keep_values=_dump(keep_values(rewritten) + draft.required_mentions),
+            keep_values=_dump(keep_values(rewritten)),
         )
-        return LLMStep(draft, rewrite_messages(prompt), finish)
+        return rewrite_step(draft, prompt, finish)
 
 
 class TaskDistractorNames(Part):
@@ -87,31 +127,20 @@ class TaskDistractorNames(Part):
     needs_reference = True
     needs_tools = True
 
-    def apply(self, draft: Draft, rng: random.Random) -> LLMStep | None:
-        used = {
-            draft.presented_name(c["tool_name"]) for c in draft.reference_calls or []
-        }
-        unused = [
-            n
-            for n in draft.presented_names
-            if n not in used
-            and n not in draft.required_mentions
-            and not mentioned_tool_names(n, draft.banned_mentions)
-        ]
+    def apply(self, draft: Draft, rng: random.Random) -> LLMStep[Draft] | None:
+        used = {c["tool_name"] for c in draft.reference_calls or []}
+        unused = [n for n in draft.tool_names if n not in used]
         if not unused:
             return None
         distractors = rng.sample(unused, min(MAX_DISTRACTOR_NAMES, len(unused)))
-        rewritten = draft.evolve(
-            self.name, required_mentions=[*draft.required_mentions, *distractors]
-        )
+        rewritten = draft.evolve(self.name, required_mentions=distractors)
 
-        def finish(response: dict) -> Draft | None:
-            task = rewritten_task(rewritten, response)
-            return None if task is None else rewritten.replace(task=task)
+        def finish(response: dict) -> Draft | Rejection:
+            return accept_task(rewritten, response)
 
         prompt = AUG_TASK_DISTRACTOR_NAMES_PROMPT.format(
             task=draft.task,
             distractor_names=_dump(distractors),
-            keep_values=_dump(keep_values(draft) + draft.required_mentions),
+            keep_values=_dump(keep_values(draft)),
         )
-        return LLMStep(draft, rewrite_messages(prompt), finish)
+        return rewrite_step(draft, prompt, finish)

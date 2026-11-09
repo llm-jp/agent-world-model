@@ -3,6 +3,7 @@ import shutil
 from helpers import CALLS, SOURCE_VERIFIER, TASK, make_db, make_draft
 
 from awm.core.augment.draft import (
+    Rejection,
     build_followup_verifier,
     finalize,
     keep_values,
@@ -49,24 +50,33 @@ def test_mentioned_tool_names_matches_spaced_form():
     assert mentioned_tool_names("nothing here", names) == []
 
 
-def test_keep_values_excludes_removed_values():
-    draft = make_draft(removed_values=["gift"])
+def test_keep_values_excludes_the_removed_value():
+    draft = make_draft(removed_value="gift")
     assert keep_values(draft) == ["blue mug", "42"]
 
 
-def test_rewritten_task_enforces_constraints_of_earlier_parts():
+def test_rewritten_task_enforces_the_draft_constraints():
     draft = make_draft(
-        removed_values=["gift"],
+        removed_value="gift",
         required_mentions=["list_coupons"],
         banned_mentions=["create_order"],
     )
     ok = "Find 'blue mug', ignore list_coupons, buy product 42"
     assert rewritten_task(draft, {"task": ok}) == ok
-    assert rewritten_task(draft, {"task": ok + " as a gift"}) is None
-    assert rewritten_task(draft, {"task": "Find 'blue mug', buy product 42"}) is None
-    assert rewritten_task(draft, {"task": ok + " via create order"}) is None
-    assert rewritten_task(draft, {"task": draft.task}) is None
-    assert rewritten_task(draft, {"task": 3}) is None
+    for bad in [
+        ok + " as a gift",
+        "Find 'blue mug', buy product 42",
+        ok + " via create order",
+        draft.task,
+        3,
+    ]:
+        assert isinstance(rewritten_task(draft, {"task": bad}), Rejection)
+
+
+def test_rejection_names_the_missing_values():
+    rejection = rewritten_task(make_draft(), {"task": "Order a mug"})
+    assert isinstance(rejection, Rejection)
+    assert "blue mug" in rejection.reason and "42" in rejection.reason
 
 
 # ------------------------------------------------- follow-up verifier
@@ -134,39 +144,30 @@ def test_followup_verifier_fails_when_original_task_not_done(tmp_path):
 
 
 def test_finalize_without_changes_keeps_the_original_verifier():
-    variant = finalize(make_draft(applied=["task_paraphrase"]))
+    variant = finalize(make_draft(part="task_paraphrase"))
     assert variant.meta.tool_view is None
     assert variant.meta.turns == []
     assert variant.meta.augmentations == ["task_paraphrase"]
     assert variant.verifier_code == SOURCE_VERIFIER
 
 
-def test_finalize_hides_tools_in_first_turn_only_and_uses_presented_names():
-    view = ToolView(rename_tools={"create_order": "createOrder"})
-    draft = make_draft(view=view, hidden_tools=["create_order"])
-    meta = finalize(draft).meta
-    assert meta.tool_view is not None
-    assert meta.tool_view.hide_tools == ["create_order"]
-    assert meta.tool_view.rename_tools == {"create_order": "createOrder"}
-    assert len(meta.turns) == 1
-    assert meta.turns[0].tool_view == view
-    assert "createOrder" in meta.turns[0].user
-
-
-def test_finalize_merges_followups_into_one_turn():
+def test_finalize_hides_the_tool_in_the_first_turn_only():
     draft = make_draft(
-        followups=["The note is gift."],
-        hidden_tools=["create_order"],
+        part="miss_func",
+        hidden_tool="create_order",
+        followup="create_order is back.",
         forbidden_calls=[{"tool_name": "create_order", "param": None}],
     )
     variant = finalize(draft)
-    assert len(variant.meta.turns) == 1
-    first, second = variant.meta.turns[0].user.split("\n")
-    assert first == "The note is gift." and "create_order" in second
-    assert variant.verifier_code != SOURCE_VERIFIER
+    assert variant.meta.tool_view == ToolView(hide_tools=["create_order"])
+    [turn] = variant.meta.turns
+    assert turn.user == "create_order is back."
+    assert turn.tool_view == ToolView()
     assert "unchanged_db_before_followup" in variant.verifier_code
 
 
-def test_finalize_followup_without_hidden_tools_keeps_the_view():
-    meta = finalize(make_draft(followups=["It is 42."])).meta
+def test_finalize_followup_without_hidden_tool_keeps_the_view():
+    view = ToolView(shuffle_seed=1)
+    meta = finalize(make_draft(view=view, followup="It is 42.")).meta
+    assert meta.tool_view == view
     assert meta.turns[0].tool_view is None

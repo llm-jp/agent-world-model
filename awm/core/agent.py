@@ -564,7 +564,6 @@ async def run_agent(config: Config):
                         {
                             "turn": turn,
                             "tool_name": server_name,
-                            "presented_name": tool_name,
                             "arguments": server_args,
                         }
                     )
@@ -574,7 +573,6 @@ async def run_agent(config: Config):
                         {
                             "turn": turn,
                             "tool_name": tool_name,
-                            "presented_name": tool_name,
                             "arguments": tool_args,
                             "rejected": True,
                         }

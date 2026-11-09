@@ -1,10 +1,11 @@
-"""Apply recipes (sequences of parts) to source tasks and merge the results into the dataset."""
+"""Apply augmentation parts to source tasks and merge the results into the dataset."""
 
 import logging
 import random
 from collections.abc import Callable
 
 from awm.core.augment.draft import Draft, LLMStep, Part, Variant, finalize
+from awm.core.augment.env_parts import ENV_PARTS
 from awm.core.augment.followup_parts import MissFunc, MissParam
 from awm.core.augment.task_parts import (
     TaskAmbiguous,
@@ -16,21 +17,17 @@ from awm.core.augment.tool_parts import (
     AddParams,
     DistractorTools,
     DropOptionalParams,
-    ParamRename,
     Shuffle,
     ToolDocParaphrase,
-    ToolRename,
 )
 from awm.core.tool_view import TaskMeta
-from awm.tools import normalize_scenario_name
+from awm.tools import normalize_scenario_name, strip_augmented
 
 logger = logging.getLogger(__name__)
 
 PARTS: dict[str, Part] = {
     part.name: part
     for part in [
-        ToolRename(),
-        ParamRename(),
         Shuffle(),
         AddParams(),
         DropOptionalParams(),
@@ -45,69 +42,52 @@ PARTS: dict[str, Part] = {
     ]
 }
 
-RECIPE_SEPARATOR = "+"
-
 # runs a batch of LLM steps and returns the drafts whose replies were usable
-LLMRunner = Callable[[list[LLMStep]], list[Draft]]
+LLMRunner = Callable[[list[LLMStep[Draft]]], list[Draft]]
 
 
-def parse_recipe(recipe: str) -> list[Part]:
-    """Parts of a recipe such as "tool_rename+task_paraphrase+miss_param"."""
-    names = [n.strip() for n in recipe.split(RECIPE_SEPARATOR) if n.strip()]
-    if not names:
-        raise ValueError("empty recipe")
-    unknown = [n for n in names if n not in PARTS]
-    if unknown:
-        raise ValueError(
-            f"unknown parts {unknown} in recipe '{recipe}', choose from {sorted(PARTS)}"
-        )
-    if len(set(names)) != len(names):
-        raise ValueError(f"recipe '{recipe}' uses a part more than once")
-    return [PARTS[n] for n in names]
+def check_part_names(names: list[str]) -> None:
+    known = set(PARTS) | set(ENV_PARTS)
+    if unknown := [n for n in names if n not in known]:
+        raise ValueError(f"unknown parts {unknown}, choose from {sorted(known)}")
 
 
-def recipe_applicable(parts: list[Part], draft: Draft) -> bool:
-    return all(part.applicable(draft) for part in parts)
-
-
-def part_rng(seed: int, recipe: str, draft: Draft, part: Part) -> random.Random:
-    key = f"{seed}:{recipe}:{normalize_scenario_name(draft.scenario)}:{draft.source_task_idx}:{part.name}"
+def part_rng(seed: int, draft: Draft, part: Part) -> random.Random:
+    key = f"{seed}:{part.name}:{normalize_scenario_name(draft.scenario)}:{draft.source_task_idx}"
     return random.Random(key)
 
 
-def apply_recipe(
-    recipe: str, drafts: list[Draft], seed: int, run_llm: LLMRunner
+def apply_part(
+    part: Part, drafts: list[Draft], seed: int, run_llm: LLMRunner
 ) -> list[Draft]:
-    """Apply the recipe's parts in order; drafts a part cannot handle are dropped.
+    """The part applied to each source draft; drafts it cannot handle are dropped.
 
-    LLM steps of the same part are sent as one batch.
+    LLM steps are sent as one batch.
     """
-    for part in parse_recipe(recipe):
-        produced: list[Draft] = []
-        steps: list[LLMStep] = []
-        for draft in drafts:
-            if not part.applicable(draft):
-                continue
-            out = part.apply(draft, part_rng(seed, recipe, draft, part))
-            if isinstance(out, LLMStep):
-                steps.append(out)
-            elif out is not None:
-                produced.append(out)
-        if steps:
-            produced.extend(run_llm(steps))
-        drafts = produced
-    return drafts
+    produced: list[Draft] = []
+    steps: list[LLMStep[Draft]] = []
+    for draft in drafts:
+        if not part.applicable(draft):
+            continue
+        out = part.apply(draft, part_rng(seed, draft, part))
+        if isinstance(out, LLMStep):
+            steps.append(out)
+        elif out is not None:
+            produced.append(out)
+    if steps:
+        produced.extend(run_llm(steps))
+    return produced
 
 
 def generate_variants(
-    recipes: list[str],
+    part_names: list[str],
     drafts: list[Draft],
-    num_per_recipe: int,
+    num_per_part: int,
     seed: int,
     run_llm: LLMRunner,
     oversample: int = 2,
 ) -> list[Variant]:
-    """Up to num_per_recipe variants per scenario and recipe.
+    """Up to num_per_part variants per scenario and part.
 
     oversample times as many source tasks are tried, since a part can reject a
     task (nothing to rename, a rewrite that failed validation, ...).
@@ -119,40 +99,31 @@ def generate_variants(
         )
 
     variants: list[Variant] = []
-    for recipe in recipes:
-        parts = parse_recipe(recipe)
+    for name in part_names:
+        part = PARTS[name]
         tried: list[Draft] = []
         for scenario, scenario_drafts in by_scenario.items():
-            candidates = [d for d in scenario_drafts if recipe_applicable(parts, d)]
-            random.Random(f"{seed}:{recipe}:{scenario}").shuffle(candidates)
-            tried.extend(candidates[: num_per_recipe * oversample])
+            candidates = [d for d in scenario_drafts if part.applicable(d)]
+            random.Random(f"{seed}:{name}:{scenario}").shuffle(candidates)
+            tried.extend(candidates[: num_per_part * oversample])
 
-        done = apply_recipe(recipe, tried, seed, run_llm)
+        done = apply_part(part, tried, seed, run_llm)
         done.sort(
             key=lambda d: (normalize_scenario_name(d.scenario), d.source_task_idx)
         )
         counts: dict[str, int] = {}
         for draft in done:
             scenario = normalize_scenario_name(draft.scenario)
-            if counts.get(scenario, 0) < num_per_recipe:
+            if counts.get(scenario, 0) < num_per_part:
                 counts[scenario] = counts.get(scenario, 0) + 1
                 variants.append(finalize(draft))
         logger.info(
-            f"Recipe {recipe}: {sum(counts.values())} tasks from {len(tried)} tried"
+            f"Part {name}: {sum(counts.values())} tasks from {len(tried)} tried"
         )
     return variants
 
 
 # ------------------------------------------------------ dataset assembly
-
-
-def strip_augmented(item: dict) -> list[str]:
-    """Original tasks of a gen_tasks.jsonl row, without previously added ones."""
-    metas = item.get("task_meta") or []
-    for idx, meta in enumerate(metas):
-        if meta is not None:
-            return item["tasks"][:idx]
-    return list(item["tasks"])
 
 
 def merge_variants(

@@ -96,22 +96,27 @@ def test_miss_func_dialogue_hides_then_reveals_the_tool(tmp_path, monkeypatch):
     assert data["turn_dbs"] == []
 
 
-def test_renamed_tool_reaches_the_server_under_its_own_name(tmp_path, monkeypatch):
+def test_extra_params_are_dropped_before_the_server(tmp_path, monkeypatch):
     meta = TaskMeta(
-        augmentations=["tool_rename"],
+        augmentations=["add_params"],
         source_task_idx=0,
-        tool_view=ToolView(rename_tools={"create_order": "createOrder"}),
+        tool_view=ToolView(
+            extra_params={"create_order": {"request_id": {"type": "string"}}}
+        ),
     )
-    data = run_scripted(
+    run_scripted(
         tmp_path,
         monkeypatch,
         meta,
         [
             tool_call(
-                "call_tool", {"tool_name": "mcp_tool_createOrder", "arguments": "{}"}
+                "call_tool",
+                {
+                    "tool_name": "mcp_tool_create_order",
+                    "arguments": '{"request_id": "r"}',
+                },
             ),
             ("done", []),
         ],
     )
     assert FakeMCP.calls == [("create_order", {})]
-    assert data["tool_calls"][0]["presented_name"] == "createOrder"

@@ -1,8 +1,9 @@
 """The task being augmented, the interface of a part, and turning a draft into data.
 
-A part reads a Draft and returns a new one (or an LLMStep that produces it),
-so parts never depend on each other: whatever an earlier part did is visible
-only through the draft's fields.
+A part reads the draft of a source task and returns the augmented draft (or an
+LLMStep that produces it). Every augmented task comes from exactly one part.
+Parts that rename tools or parameters build a new environment instead
+(env_parts.py).
 """
 
 import dataclasses
@@ -13,7 +14,7 @@ from typing import Any, ClassVar
 
 from awm.core.tool_view import TaskMeta, ToolView, Turn
 from awm.core.verify import find_verifier_function_name
-from awm.prompts import AUG_MISS_FUNC_FOLLOWUP
+from awm.prompts import AUG_TOOL_FEEDBACK_PROMPT
 
 # shortest argument value treated as taken from the task text
 MIN_VALUE_LENGTH = 2
@@ -29,58 +30,56 @@ class Draft:
     tools: list[dict] | None
     # tool calls of a solved reference run of the source task; None if unsolved
     reference_calls: list[dict] | None
+    # final answer of that reference run
+    reference_answer: str = ""
     # tools of the other scenarios, a pool for distractors
     other_tools: list[dict] = field(default_factory=list)
 
+    # the part that produced this draft; empty for a source task
+    part: str = ""
     # how the tools are presented in every turn
     view: ToolView = field(default_factory=ToolView)
-    # original tool names hidden until the follow-up turn
-    hidden_tools: list[str] = field(default_factory=list)
-    # user messages of the follow-up turn, in the order the parts added them
-    followups: list[str] = field(default_factory=list)
+    # tool hidden until the follow-up turn
+    hidden_tool: str | None = None
+    # user message of the follow-up turn
+    followup: str | None = None
     # [{"tool_name", "param" or None}] the agent must not call before the follow-up
     forbidden_calls: list[dict] = field(default_factory=list)
-    # values removed from the task text; later rewrites must not bring them back
-    removed_values: list[str] = field(default_factory=list)
-    # texts later rewrites must keep (e.g. added tool names)
+    # value removed from the task text; a rewrite must not keep it
+    removed_value: str | None = None
+    # texts a rewrite must contain (e.g. tool names it has to mention)
     required_mentions: list[str] = field(default_factory=list)
-    # tool names later rewrites must not mention
+    # tool names a rewrite must not mention
     banned_mentions: list[str] = field(default_factory=list)
-    applied: list[str] = field(default_factory=list)
 
     def evolve(self, part: str, **changes: Any) -> "Draft":
-        """A copy with the changes, recording that the part was applied."""
-        return dataclasses.replace(self, applied=[*self.applied, part], **changes)
-
-    def replace(self, **changes: Any) -> "Draft":
-        """A copy with the changes, for a part already recorded by evolve."""
-        return dataclasses.replace(self, **changes)
-
-    def with_view(self, part: str, **view_changes: Any) -> "Draft":
-        view = self.view.model_copy(update=view_changes, deep=True)
-        return self.evolve(part, view=view)
-
-    def presented_name(self, tool_name: str) -> str:
-        return self.view.rename_tools.get(tool_name, tool_name)
+        """A copy with the changes, produced by the part."""
+        return dataclasses.replace(self, part=part, **changes)
 
     @property
     def tool_names(self) -> list[str]:
         return [t["name"] for t in self.tools or []]
 
-    @property
-    def presented_names(self) -> list[str]:
-        names = [self.presented_name(n) for n in self.tool_names]
-        return names + [t["name"] for t in self.view.distractor_tools]
+
+@dataclass(frozen=True)
+class Rejection:
+    """Why a reply was not usable; sent back to the LLM as feedback."""
+
+    reason: str
 
 
 @dataclass
-class LLMStep:
-    """A part's request to the LLM and how to turn the parsed reply into a draft."""
+class LLMStep[T]:
+    """A request to the LLM and how to turn the parsed reply into a result."""
 
-    # the draft the part was applied to
-    draft: Draft
     messages: list[dict]
-    finish: Callable[[dict], Draft | None]
+    finish: Callable[[dict], T | Rejection]
+    # names the step in logs
+    label: str
+    # prompt asking the LLM to check an accepted result; None skips the check
+    check_prompt: Callable[[T], str] | None = None
+    # user message asking for another reply; formatted with {problems}
+    feedback_prompt: str = AUG_TOOL_FEEDBACK_PROMPT
 
 
 class Part:
@@ -95,7 +94,7 @@ class Part:
             return False
         return not (self.needs_tools and not draft.tools)
 
-    def apply(self, draft: Draft, rng: random.Random) -> Draft | LLMStep | None:
+    def apply(self, draft: Draft, rng: random.Random) -> Draft | LLMStep[Draft] | None:
         raise NotImplementedError
 
 
@@ -164,25 +163,29 @@ def keep_values(draft: Draft) -> list[str]:
     return [
         v
         for v in values
-        if v not in draft.removed_values
+        if v != draft.removed_value
         and not mentioned_tool_names(v, draft.banned_mentions)
     ]
 
 
-def rewritten_task(draft: Draft, response: dict) -> str | None:
-    """The rewritten task in the reply, if it keeps what earlier parts set up."""
+def rewritten_task(draft: Draft, response: dict) -> str | Rejection:
+    """The rewritten task in the reply, if it keeps what the draft requires."""
     task = response.get("task")
     if not isinstance(task, str) or not task.strip():
-        return None
+        return Rejection('"task" must be a non-empty string.')
     task = task.strip()
     if task == draft.task:
-        return None
-    if not all(v in task for v in keep_values(draft) + draft.required_mentions):
-        return None
-    if any(v in task for v in draft.removed_values):
-        return None
-    if mentioned_tool_names(task, draft.banned_mentions):
-        return None
+        return Rejection("The rewritten request is identical to the original.")
+    if missing := [
+        v for v in keep_values(draft) + draft.required_mentions if v not in task
+    ]:
+        return Rejection(f"These texts must appear verbatim but are missing: {missing}")
+    if draft.removed_value is not None and draft.removed_value in task:
+        return Rejection(f'The value "{draft.removed_value}" must not appear.')
+    if banned := mentioned_tool_names(task, draft.banned_mentions):
+        return Rejection(
+            f"These tool names must not be mentioned in any form: {banned}"
+        )
     return task
 
 
@@ -277,39 +280,26 @@ class Variant:
 
 
 def finalize(draft: Draft) -> Variant:
-    """Assemble the task meta and verifier from everything the parts set up."""
-    base_view = None if draft.view == ToolView() else draft.view
-    first_view = base_view
-    if draft.hidden_tools:
-        first_view = draft.view.model_copy(
-            update={"hide_tools": [*draft.view.hide_tools, *draft.hidden_tools]},
-            deep=True,
-        )
+    """Assemble the task meta and verifier of the part's draft."""
+    view = None if draft.view == ToolView() else draft.view
+    restored = None
+    if draft.hidden_tool is not None:
+        view = ToolView(hide_tools=[draft.hidden_tool])
+        # the follow-up turn shows every tool again
+        restored = ToolView()
 
-    messages = list(draft.followups) + [
-        AUG_MISS_FUNC_FOLLOWUP.format(tool_name=draft.presented_name(name))
-        for name in draft.hidden_tools
-    ]
     turns = []
-    if messages:
-        # the follow-up turn restores the tools hidden in the first one
-        turns.append(
-            Turn(
-                user="\n".join(messages),
-                tool_view=(base_view or ToolView()) if draft.hidden_tools else None,
-            )
-        )
-
     verifier_code = draft.source_verifier_code
-    if turns:
+    if draft.followup is not None:
+        turns.append(Turn(user=draft.followup, tool_view=restored))
         verifier_code = build_followup_verifier(
             draft.source_verifier_code, draft.forbidden_calls
         )
 
     meta = TaskMeta(
-        augmentations=list(draft.applied),
+        augmentations=[draft.part],
         source_task_idx=draft.source_task_idx,
-        tool_view=first_view,
+        tool_view=view,
         turns=turns,
     )
     return Variant(

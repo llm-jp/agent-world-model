@@ -81,7 +81,7 @@ def first_accepted(step, candidates: list[dict]):
     """The draft from the first candidate reply the step accepts, else None."""
     for reply in candidates:
         draft = step.finish(reply)
-        if draft is not None:
+        if isinstance(draft, Draft):
             return draft
     return None
 

@@ -28,23 +28,19 @@
    LLM を使うパーツの返答は、使えるものになるまで作り直させる (後述)。
 5. **データとして組み立てる** (`finalize`, `draft.py`)
    `Draft` から、タスク文、`TaskMeta` (ツールの見せ方と追加発話のターン)、verifier コードを作る。
-6. **`.aug` ファイルに書き出す** (`merge_variants`, `compose.py`)
-   入力ファイルには手を加えない。入力と同じ場所に、拡張子の前に `.aug` を付けたファイルを書き出す (`--output_suffix`、`output_path`)。
+6. **別のディレクトリに書き出す** (`merge_variants`, `compose.py`)
+   入力ファイルには手を加えない。`--output_dir` (既定は入力のディレクトリ名に `_aug` を付けたもの。例: `outputs/<model>_ja` → `outputs/<model>_ja_aug`) に、入力と同じ名前で書き出す (`output_path`)。
+   - 書き出すファイル: `gen_tasks.jsonl` / verifier ファイル (`gen_verifier.pure_code.jsonl`) / `gen_envs.jsonl` / `gen_db.jsonl` / `gen_sample.jsonl`
+   - 出力先が入力と同じファイルになる場合は、実行前にエラーにする。
 
-   | 入力 | 出力 |
-   |---|---|
-   | `gen_tasks.jsonl` | `gen_tasks.aug.jsonl` |
-   | `gen_verifier.pure_code.jsonl` | `gen_verifier.pure_code.aug.jsonl` |
-   | `gen_envs.jsonl` / `gen_db.jsonl` / `gen_sample.jsonl` | `gen_envs.aug.jsonl` / `gen_db.aug.jsonl` / `gen_sample.aug.jsonl` |
-
-   どの出力も、元のデータに拡張データを足したデータセット全体になっている。RL はこれを 1 つのデータセットとして読む。
-   - `gen_tasks.aug.jsonl`: 各シナリオの `tasks` の末尾に拡張タスクを足し、設定は並びを揃えた `task_meta` に入れる (元タスクの位置は `null`)。
+   出力ディレクトリの中身は、元のデータに拡張データを足したデータセット全体になっている。RL はこれを 1 つのデータセットとして読む。
+   - `gen_tasks.jsonl`: 各シナリオの `tasks` の末尾に拡張タスクを足し、設定は並びを揃えた `task_meta` に入れる (元タスクの位置は `null`)。
    - verifier ファイル: 元の verifier のあとに、同じ `(scenario, task_idx)` で `"augmented": true` の行として足す。
    - 再実行すると、出力ファイルを作り直す。`--allowed_scenarios` を指定したときは、選ばなかったシナリオの拡張分を前回の出力から引き継ぐ。
 
 ## 既存の生成ステージとの関係
 
-拡張データは `.aug` ファイルにだけ書くので、生成ステージを実行し直しても拡張データは変わらない。新しい内容に揃えるには、生成ステージのあとで `awm gen aug` を実行し直す。
+拡張データは出力ディレクトリにだけ書くので、生成ステージを実行し直しても拡張データは変わらない。新しい内容に揃えるには、生成ステージのあとで `awm gen aug` を実行し直す。
 
 入力ファイルに拡張データが含まれていても壊れないよう、次の取り決めにしている。判定の関数は `awm/tools.py` にまとめている。
 
@@ -88,13 +84,13 @@
    - 確認用のタスクの呼び出しを新しい名前で再生すると、各呼び出しの成否が元のサーバーと同じになり、verifier で `complete` になる (`replay_problems`)。
 4. **自己チェック**: コードの差分を LLM に見せ、名前以外を変えていないか、名前を指す表現 (表記ゆれを含む) がすべて直っているかを答えさせる。
 5. **依頼文を書き換える** (`task_step`): 元の依頼文に古いツール名が出てくれば、LLM が新しい名前に書き換える。機械チェック (古い名前が残らない、新しい名前が入る、参照軌跡の値が残る) と自己チェック (`dialogue_check_prompt`) をかける。出てこなければそのまま使う。
-6. **追加する** (`merge_env_variants`): 次の `.aug` ファイルにそのシナリオの行を足す。行には `source_scenario` と `augmentation` を付け、再実行のときに入れ替えられるようにする。
-   - `gen_envs.aug.jsonl`: 書き直したコード
-   - `gen_db.aug.jsonl` / `gen_sample.aug.jsonl`: 元のシナリオの行をそのまま写す (DB は変えないため)
-   - `gen_tasks.aug.jsonl`: 書き換えた依頼文と `task_meta` (`source_scenario` に元のシナリオ)
+6. **追加する** (`merge_env_variants`): 出力ディレクトリの次のファイルにそのシナリオの行を足す。行には `source_scenario` と `augmentation` を付け、再実行のときに入れ替えられるようにする。
+   - `gen_envs.jsonl`: 書き直したコード
+   - `gen_db.jsonl` / `gen_sample.jsonl`: 元のシナリオの行をそのまま写す (DB は変えないため)
+   - `gen_tasks.jsonl`: 書き換えた依頼文と `task_meta` (`source_scenario` に元のシナリオ)
    - verifier ファイル: 元タスクの verifier
 
-再生用のサーバーとデータベースは `--work_dir` (既定は `gen_tasks.jsonl` と同じ場所の `aug_env_runs/`) に作る。再生は `--max_concurrency` 個まで並行して動かす。
+再生用のサーバーとデータベースは `--work_dir` (既定は出力ディレクトリの `aug_env_runs/`) に作る。再生は `--max_concurrency` 個まで並行して動かす。
 
 ### ツールの見せ方を変える (`tool_parts.py`)
 
@@ -195,12 +191,13 @@ awm gen aug \
     --envs_path outputs/gen_envs.jsonl \
     --db_path outputs/gen_db.jsonl \
     --sample_path outputs/gen_sample.jsonl \
+    --output_dir outputs_aug \
     --parts "tool_rename_random,task_paraphrase,miss_param" \
     --num_per_part 2 \
     --max_generations 3
 ```
 
-Slurm では `scripts/run_gen_aug.sh` で vLLM サーバーごと両方の段階を動かす (`-p` でパーツを指定、`-n 20` で `debug_aug/` に試し実行)。
+Slurm では `scripts/run_gen_aug.sh` で vLLM サーバーごと両方の段階を動かす。出力先は `-o` で指定したディレクトリ名に `_aug` を付けたものになる (`-p` でパーツを指定、`-n 20` で `<dir>_aug_debug/` に試し実行)。
 
 ## テスト
 
@@ -214,6 +211,6 @@ Slurm では `scripts/run_gen_aug.sh` で vLLM サーバーごと両方の段階
 | `test_parts.py` | 各パーツ |
 | `test_draft.py` | 機械チェックと verifier の組み立て |
 | `test_compose.py` | パーツの適用とデータへの追記 |
-| `test_run.py` | `.aug` ファイルへの書き出し、入力が変わらないこと、`--allowed_scenarios` での引き継ぎ |
+| `test_run.py` | 出力ディレクトリへの書き出し、入力が変わらないこと、`--allowed_scenarios` での引き継ぎ |
 | `test_refine.py` | フィードバックと自己チェックの往復 |
 | `test_env_parts.py` | 名前の決め方、コードの置き換え、環境の追加。小さな FastAPI サーバーを実際に起動して、再生と機械チェックも確かめる |

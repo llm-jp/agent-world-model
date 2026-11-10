@@ -1,9 +1,11 @@
-"""Add augmented tasks to gen_tasks.jsonl and their verifiers to the verifier file.
+"""Write the dataset with augmented tasks to a directory of its own.
 
-Augmented tasks live next to the original ones so that RL reads a single
-dataset: they are appended to each scenario's `tasks`, with their settings in a
-parallel `task_meta` list (None for original tasks), and their verifiers are
-appended to the code-mode verifier file under the same (scenario, task_idx).
+The input files are left as they are. The output directory gets files of the
+same names (gen_tasks.jsonl, the verifier file, gen_envs.jsonl, ...), and
+together they are a whole dataset so that RL reads a single one: augmented
+tasks are appended to each scenario's `tasks`, with their settings in a
+parallel `task_meta` list (None for original tasks), and their verifiers follow
+the original ones under the same (scenario, task_idx).
 
 Each augmentation is a part applied on its own to a source task. Parts that
 rename tools or parameters (env_parts.py) rebuild the environment instead and
@@ -12,7 +14,6 @@ add it as a scenario of its own to every scenario file.
 
 import logging
 import os
-import shutil
 from dataclasses import dataclass
 
 from awm.core.augment.compose import (
@@ -45,20 +46,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Config:
-    # gen_tasks.jsonl, updated in place (first run backs it up to .bak)
+    # gen_tasks.jsonl
     input_task: str
-    # code-mode verifier file, updated in place (first run backs it up to .bak)
+    # code-mode verifier file
     input_verifier: str
     # gen_reference.jsonl from `awm gen reference`
     input_reference: str
     # gen_tools.jsonl from `awm gen reference`
     input_tools: str
-    # scenario files; rebuilt environments are added to them in place (with a .bak)
+    # scenario files; rebuilt environments are added to their outputs
     envs_path: str = "./outputs/gen_envs.jsonl"
     db_path: str = "./outputs/gen_db.jsonl"
     sample_path: str = "./outputs/gen_sample.jsonl"
+    # the dataset with augmented data, under the input file names;
+    # defaults to <input_task dir>_aug, e.g. outputs/<model>_ja -> outputs/<model>_ja_aug
+    output_dir: str | None = None
     # servers and databases of the replays that check rebuilt environments;
-    # defaults to <input_task dir>/aug_env_runs
+    # defaults to <output_dir>/aug_env_runs
     work_dir: str | None = None
     # comma-separated part names, each applied on its own; defaults to every part
     parts: list[str] | None = None
@@ -71,6 +75,16 @@ class Config:
     max_generations: int = 3
     # concurrent LLM requests, and concurrent replays of rebuilt environments
     max_concurrency: int = 32
+
+    def input_paths(self) -> list[str]:
+        """Inputs that are written again, with augmented data, to output_dir."""
+        return [
+            self.input_task,
+            self.input_verifier,
+            self.envs_path,
+            self.db_path,
+            self.sample_path,
+        ]
 
     def pre_process(self):
         for path in [
@@ -86,10 +100,17 @@ class Config:
         if self.parts is None:
             self.parts = [*PARTS, *ENV_PARTS]
         check_part_names(self.parts)
+        if self.output_dir is None:
+            input_dir = os.path.abspath(os.path.dirname(self.input_task))
+            self.output_dir = os.path.relpath(f"{input_dir}_aug")
+        names = [os.path.basename(p) for p in self.input_paths()]
+        assert len(set(names)) == len(names), f"input file names collide: {names}"
+        for path in self.input_paths():
+            assert os.path.abspath(output_path(path, self.output_dir)) != (
+                os.path.abspath(path)
+            ), f"output_dir {self.output_dir} would overwrite {path}"
         if self.work_dir is None:
-            self.work_dir = os.path.join(
-                os.path.dirname(self.input_task) or ".", "aug_env_runs"
-            )
+            self.work_dir = os.path.join(self.output_dir, "aug_env_runs")
         if self.allowed_scenarios:
             self.allowed_scenarios = sorted(
                 {normalize_scenario_name(name) for name in self.allowed_scenarios}
@@ -190,24 +211,36 @@ def llm_complete(config: Config) -> Complete:
     return complete
 
 
-def _backup_once(path: str) -> None:
-    backup = f"{path}.bak"
-    if not os.path.exists(backup):
-        shutil.copy2(path, backup)
-        logger.info(f"Backed up {path} to {backup}")
+def output_path(path: str, output_dir: str) -> str:
+    """The input file at path, moved to output_dir."""
+    return os.path.join(output_dir, os.path.basename(path))
+
+
+def load_previous(path: str) -> list[dict]:
+    """Rows of an output written by an earlier run, if any."""
+    return tools_jsonl_load(path) if os.path.exists(path) else []
 
 
 def run(config: Config):
-    assert config.parts is not None and config.work_dir is not None
-    task_rows = tools_jsonl_load(config.input_task)
-    verifier_rows = tools_jsonl_load(config.input_verifier)
-    base_items = [r for r in task_rows if not is_rebuilt_env_row(r)]
-    base_verifiers = [r for r in verifier_rows if not is_rebuilt_env_row(r)]
-    rows = {
-        "envs": tools_jsonl_load(config.envs_path),
-        "db": tools_jsonl_load(config.db_path),
-        "sample": tools_jsonl_load(config.sample_path),
+    assert config.parts is not None
+    assert config.output_dir is not None and config.work_dir is not None
+    inputs = {
+        "tasks": config.input_task,
+        "verifiers": config.input_verifier,
+        "envs": config.envs_path,
+        "db": config.db_path,
+        "sample": config.sample_path,
     }
+    outputs = {
+        kind: output_path(path, config.output_dir) for kind, path in inputs.items()
+    }
+    # only original rows are augmented; augmented data already in the inputs is skipped
+    rows = {
+        kind: [r for r in tools_jsonl_load(path) if not is_rebuilt_env_row(r)]
+        for kind, path in inputs.items()
+    }
+    base_items = rows.pop("tasks")
+    base_verifiers = rows.pop("verifiers")
 
     drafts = load_drafts(config, base_items)
     solved = sum(1 for d in drafts if d.reference_calls)
@@ -224,23 +257,27 @@ def run(config: Config):
     variants = generate_variants(
         task_parts, drafts, config.num_per_part, config.seed, run_llm
     )
+    # scenarios outside the selection keep what an earlier run wrote for them
+    previous = {
+        kind: load_previous(path) if config.allowed_scenarios else []
+        for kind, path in outputs.items()
+    }
     keep_sources: set[str] = set()
     if config.allowed_scenarios:
-        # scenarios outside the selection keep the augmented tasks they already have
         others = [
             item
-            for item in base_items
-            if normalize_scenario_name(item["scenario"]) not in config.allowed_scenarios
+            for item in previous["tasks"]
+            if not is_rebuilt_env_row(item)
+            and normalize_scenario_name(item["scenario"])
+            not in config.allowed_scenarios
         ]
-        variants = existing_variants(others, base_verifiers) + variants
+        variants = existing_variants(others, previous["verifiers"]) + variants
         keep_sources = {normalize_scenario_name(item["scenario"]) for item in others}
     new_items, new_verifiers = merge_variants(base_items, base_verifiers, variants)
 
     env_variants = build_env_variants(
         [p for p in config.parts if p in ENV_PARTS],
-        scenario_sources(
-            drafts, [r for r in rows["envs"] if not is_rebuilt_env_row(r)]
-        ),
+        scenario_sources(drafts, rows["envs"]),
         ReplayContext(config.db_path, config.sample_path, config.work_dir),
         complete,
         run_llm,
@@ -249,24 +286,24 @@ def run(config: Config):
         max_generations=config.max_generations,
         workers=config.max_concurrency,
     )
-    env_tasks = [r for r in task_rows if is_rebuilt_env_row(r)]
+
+    def rebuilt(kind: str) -> list[dict]:
+        return [r for r in previous[kind] if is_rebuilt_env_row(r)]
+
     new_rows, env_verifiers = merge_env_variants(
-        {**rows, "tasks": new_items + env_tasks},
-        [r for r in verifier_rows if is_rebuilt_env_row(r)],
+        {
+            **{kind: rs + rebuilt(kind) for kind, rs in rows.items()},
+            "tasks": new_items + rebuilt("tasks"),
+        },
+        rebuilt("verifiers"),
         env_variants,
         keep_sources,
     )
 
-    outputs = {
-        config.input_task: new_rows["tasks"],
-        config.input_verifier: new_verifiers + env_verifiers,
-        config.envs_path: new_rows["envs"],
-        config.db_path: new_rows["db"],
-        config.sample_path: new_rows["sample"],
-    }
-    for path, data in outputs.items():
-        _backup_once(path)
-        tools_jsonl_save(data, path)
+    new_rows["verifiers"] = new_verifiers + env_verifiers
+    for kind, path in outputs.items():
+        tools_jsonl_save(new_rows[kind], path)
+        logger.info(f"Saved {len(new_rows[kind])} rows to {path}")
 
     counts: dict[str, int] = {}
     for variant in variants + [v for e in env_variants for v in e.variants]:

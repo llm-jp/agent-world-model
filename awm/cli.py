@@ -35,7 +35,7 @@ class GenCmd(Enum):
     verifier = "verifier"
     # Solve the original tasks once and keep graded runs and tool lists for augmentation
     reference = "reference"
-    # Append augmented tasks and their verifiers to the task and verifier files
+    # Write the dataset with augmented tasks and their verifiers to a directory of its own
     aug = "aug"
     # Run the full synthesis pipeline
     all = "all"

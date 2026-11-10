@@ -645,8 +645,16 @@ async def run_agent(config: Config):
         logger.info(f"Saved trajectory to {trajectory_path}")
 
         # Save final database
-        if db_file_path and os.path.exists(db_file_path):
-            final_db_path = os.path.join(output_dir, "final.db")
+        # a database built for the run is already output_dir/final.db
+        final_db_path = os.path.join(output_dir, "final.db")
+        if (
+            db_file_path
+            and os.path.exists(db_file_path)
+            and not (
+                os.path.exists(final_db_path)
+                and os.path.samefile(db_file_path, final_db_path)
+            )
+        ):
             shutil.copy2(db_file_path, final_db_path)
             logger.info(f"Saved final database to {final_db_path}")
 

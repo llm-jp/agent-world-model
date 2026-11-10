@@ -34,7 +34,7 @@ def test_without_view_tools_and_calls_pass_through():
 
 
 def test_unknown_tool_is_rejected():
-    presented = PresentedTools(TOOLS, ToolView(shuffle_seed=1))
+    presented = PresentedTools(TOOLS, ToolView())
     with pytest.raises(ToolCallRejected):
         presented.resolve("createOrder", {})
 
@@ -68,31 +68,27 @@ def test_extra_params_are_dropped_but_real_params_kept():
     ) == ("create_order", {"product_id": 1, "note": "n"})
 
 
-def test_dropped_params_and_descriptions():
+def test_descriptions():
     view = ToolView(
-        drop_params={"create_order": ["note", "missing"]},
         tool_descriptions={"create_order": "Place an order."},
         param_descriptions={"create_order": {"product_id": "ID of the product."}},
     )
     order = PresentedTools(TOOLS, view).tools[0]
     assert order["description"] == "Place an order."
-    assert list(order["inputSchema"]["properties"]) == ["product_id"]
+    assert list(order["inputSchema"]["properties"]) == ["product_id", "note"]
     assert (
         order["inputSchema"]["properties"]["product_id"]["description"]
         == "ID of the product."
     )
 
 
-def test_shuffle_is_deterministic_and_keeps_tools():
-    first = PresentedTools(TOOLS, ToolView(shuffle_seed=7)).tools
-    second = PresentedTools(TOOLS, ToolView(shuffle_seed=7)).tools
-    assert first == second
-    assert sorted(names(first)) == sorted(names(TOOLS))
-
-
 def test_view_does_not_modify_the_original_tools():
     before = repr(TOOLS)
     PresentedTools(
-        TOOLS, ToolView(drop_params={"create_order": ["note"]}, shuffle_seed=1)
+        TOOLS,
+        ToolView(
+            param_descriptions={"create_order": {"note": "Changed."}},
+            extra_params={"create_order": {"request_id": {"type": "string"}}},
+        ),
     )
     assert repr(TOOLS) == before

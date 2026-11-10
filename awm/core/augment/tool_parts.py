@@ -13,7 +13,6 @@ from awm.core.augment.draft import (
     Part,
     Rejection,
     properties,
-    required,
 )
 from awm.core.tool_view import ToolView
 from awm.prompts import AUG_TOOL_DOC_PARAPHRASE_PROMPT
@@ -42,16 +41,6 @@ def presenting(draft: Draft, part: str, **view: Any) -> Draft:
     return draft.evolve(part, view=ToolView(**view))
 
 
-class Shuffle(Part):
-    name = "shuffle"
-    needs_tools = True
-
-    def apply(self, draft: Draft, rng: random.Random) -> Draft | None:
-        if len(draft.tool_names) < 2:
-            return None
-        return presenting(draft, self.name, shuffle_seed=rng.randrange(1 << 30))
-
-
 class AddParams(Part):
     name = "add_params"
     needs_tools = True
@@ -66,32 +55,6 @@ class AddParams(Part):
         if not extra:
             return None
         return presenting(draft, self.name, extra_params=extra)
-
-
-class DropOptionalParams(Part):
-    name = "drop_optional_params"
-    needs_tools = True
-    needs_reference = True
-
-    def apply(self, draft: Draft, rng: random.Random) -> Draft | None:
-        used: dict[str, set[str]] = {}
-        for call in draft.reference_calls or []:
-            used.setdefault(call["tool_name"], set()).update(
-                call.get("arguments") or {}
-            )
-        drop = {}
-        for tool in draft.tools or []:
-            name = tool["name"]
-            optional = [
-                p
-                for p in properties(tool)
-                if p not in required(tool) and p not in used.get(name, set())
-            ]
-            if optional:
-                drop[name] = optional
-        if not drop:
-            return None
-        return presenting(draft, self.name, drop_params=drop)
 
 
 class DistractorTools(Part):

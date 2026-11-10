@@ -167,7 +167,7 @@ def test_finalize_hides_the_tool_in_the_first_turn_only():
 
 
 def test_finalize_followup_without_hidden_tool_keeps_the_view():
-    view = ToolView(shuffle_seed=1)
+    view = ToolView(tool_descriptions={"create_order": "Place an order."})
     meta = finalize(make_draft(view=view, followup="It is 42.")).meta
     assert meta.tool_view == view
     assert meta.turns[0].tool_view is None

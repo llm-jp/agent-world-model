@@ -69,11 +69,6 @@ TOOL_ERROR_PREFIX = "Error: "
 SCENARIO_SEPARATOR = "__"
 
 
-def to_camel(name: str) -> str:
-    head, *rest = name.split("_")
-    return head + "".join(part[:1].upper() + part[1:] for part in rest)
-
-
 def _word(name: str) -> str:
     return rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
 
@@ -111,8 +106,7 @@ class Renames:
         """Old names, with their new names, that the text mentions.
 
         Tool names match in any case; parameter names only as written, since
-        ones like "note" are ordinary words (ParamRename only renames names
-        with "_").
+        ones like "note" are ordinary words.
         """
         found = {
             old: new for old, new in self.tools.items() if mentions(text, old, True)
@@ -229,23 +223,8 @@ class ToolRenameRandom(EnvPart):
         return Renames(tools=names)
 
 
-class ParamRename(EnvPart):
-    """Write the parameters with "_" in camelCase."""
-
-    name = "param_rename"
-
-    def renames(self, source: ScenarioSource, rng: random.Random) -> Renames | None:
-        params = {}
-        for tool in source.tools:
-            names = list(properties(tool))
-            mapping = {p: to_camel(p) for p in names if to_camel(p) != p}
-            if mapping and not set(mapping.values()) & set(names):
-                params[tool["name"]] = mapping
-        return Renames(params=params) if params else None
-
-
 ENV_PARTS: dict[str, EnvPart] = {
-    part.name: part for part in [ToolRename(), ToolRenameRandom(), ParamRename()]
+    part.name: part for part in [ToolRename(), ToolRenameRandom()]
 }
 
 

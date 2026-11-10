@@ -1,13 +1,12 @@
 """Change how MCP tools are presented to the agent without touching the server.
 
-A ToolView rewrites the `list_tools` result (descriptions, parameters, extra
-and hidden tools, order) and turns the agent's calls back into calls the
+A ToolView rewrites the `list_tools` result (descriptions, extra parameters,
+extra and hidden tools) and turns the agent's calls back into calls the
 server accepts. Renamed tools are not a view: they get an environment of their
 own (awm/core/augment/env_parts.py).
 """
 
 import copy
-import random
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,11 +20,8 @@ class ToolView(BaseModel):
     param_descriptions: dict[str, dict[str, str]] = Field(default_factory=dict)
     # tool -> {presented param -> JSON schema}; always optional, dropped on call
     extra_params: dict[str, dict[str, dict]] = Field(default_factory=dict)
-    # tool -> params removed from the presented schema
-    drop_params: dict[str, list[str]] = Field(default_factory=dict)
     # tools in presented form (name, description, inputSchema); calls fail
     distractor_tools: list[dict] = Field(default_factory=list)
-    shuffle_seed: int | None = None
 
 
 class ToolCallRejected(Exception):
@@ -86,20 +82,11 @@ class PresentedTools:
             properties: dict = schema.get("properties", {})
             required: list[str] = list(schema.get("required", []))
 
-            for param in view.drop_params.get(name, []):
-                properties.pop(param, None)
-                if param in required:
-                    required.remove(param)
             for param, desc in view.param_descriptions.get(name, {}).items():
                 if param in properties:
                     properties[param]["description"] = desc
             for param, param_schema in view.extra_params.get(name, {}).items():
                 properties.setdefault(param, copy.deepcopy(param_schema))
-
-            if view.shuffle_seed is not None:
-                items = list(properties.items())
-                random.Random(f"{view.shuffle_seed}:{name}").shuffle(items)
-                properties = dict(items)
 
             if properties or "properties" in schema:
                 schema["properties"] = properties
@@ -116,8 +103,6 @@ class PresentedTools:
             )
 
         presented.extend(copy.deepcopy(view.distractor_tools))
-        if view.shuffle_seed is not None:
-            random.Random(view.shuffle_seed).shuffle(presented)
         return presented
 
     def resolve(self, tool_name: str, arguments: dict) -> tuple[str, dict]:

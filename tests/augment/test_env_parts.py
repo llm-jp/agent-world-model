@@ -8,7 +8,6 @@ from awm.core.augment.draft import Draft, LLMStep, Rejection, Variant
 from awm.core.augment.env_parts import (
     CheckTask,
     EnvVariant,
-    ParamRename,
     RebuiltEnv,
     Renames,
     ReplayContext,
@@ -167,13 +166,6 @@ def test_tool_rename_random_is_distinct_letters_and_deterministic():
     assert all(n.isalpha() and n.islower() and len(n) == 8 for n in names)
 
 
-def test_param_rename_only_renames_names_with_underscores():
-    out = ParamRename().renames(make_source(), random.Random(0))
-    assert out == Renames(params={"create_order": {"product_id": "productId"}})
-    plain = [{"name": "t", "inputSchema": {"properties": {"note": {}}}}]
-    assert ParamRename().renames(make_source(tools=plain), random.Random(0)) is None
-
-
 # ---------------------------------------------------------- code edits
 
 
@@ -227,7 +219,7 @@ def check_task() -> CheckTask:
 
 
 def test_code_step_accepts_a_server_that_behaves_the_same(ctx):
-    step = code_step(ctx, make_source(), "param_rename", RENAMES, [check_task()])
+    step = code_step(ctx, make_source(), "tool_rename", RENAMES, [check_task()])
     rebuilt = step.finish({"edits": GOOD_EDITS})
     assert not isinstance(rebuilt, Rejection), rebuilt
     assert {t["name"] for t in rebuilt.tools} == {"placeOrder", "findItems"}
@@ -239,7 +231,7 @@ def test_code_step_accepts_a_server_that_behaves_the_same(ctx):
 
 
 def test_code_step_rejects_stale_names_and_changed_parameters(ctx):
-    step = code_step(ctx, make_source(), "param_rename", RENAMES, [check_task()])
+    step = code_step(ctx, make_source(), "tool_rename", RENAMES, [check_task()])
     stale = step.finish({"edits": GOOD_EDITS[1:]})
     assert isinstance(stale, Rejection) and "search_products" in stale.reason
     not_aliased = step.finish({"edits": [GOOD_EDITS[0], GOOD_EDITS[2]]})
@@ -247,7 +239,7 @@ def test_code_step_rejects_stale_names_and_changed_parameters(ctx):
 
 
 def test_code_step_reports_a_server_that_does_not_start(ctx):
-    step = code_step(ctx, make_source(), "param_rename", RENAMES, [check_task()])
+    step = code_step(ctx, make_source(), "tool_rename", RENAMES, [check_task()])
     broken = [*GOOD_EDITS, {"old": "app = FastAPI(", "new": "app = missing_name("}]
     rejection = step.finish({"edits": broken})
     assert isinstance(rejection, Rejection)
@@ -255,7 +247,7 @@ def test_code_step_reports_a_server_that_does_not_start(ctx):
 
 
 def test_refine_feeds_server_problems_back(ctx):
-    step = code_step(ctx, make_source(), "param_rename", RENAMES, [check_task()])
+    step = code_step(ctx, make_source(), "tool_rename", RENAMES, [check_task()])
     replies = iter(
         [
             json.dumps({"edits": GOOD_EDITS[1:]}),

@@ -41,9 +41,9 @@ def grade(variant: Variant, tmp_path, calls: list[dict]) -> str:
 
 
 def test_check_part_names_rejects_unknown_parts():
-    check_part_names([*PARTS, "tool_rename", "param_rename"])
+    check_part_names([*PARTS, "tool_rename", "tool_rename_random"])
     with pytest.raises(ValueError):
-        check_part_names(["shuffle", "tool_rename+miss_func"])
+        check_part_names(["add_params", "tool_rename+miss_func"])
 
 
 def test_miss_func_variant_restores_the_tool_after_the_followup(tmp_path):
@@ -83,14 +83,14 @@ def test_part_drops_drafts_it_cannot_handle():
 def test_generate_variants_limits_tasks_per_scenario_and_part():
     drafts = [make_draft(source_task_idx=i) for i in range(5)]
     drafts.append(make_draft(scenario="Bank", source_task_idx=0))
-    variants = generate_variants(["shuffle", "miss_func"], drafts, 2, 0, LLM)
+    variants = generate_variants(["add_params", "miss_func"], drafts, 2, 0, LLM)
     per_key: dict[tuple[str, str], int] = {}
     for v in variants:
         key = (v.scenario, v.meta.augmentations[0])
         per_key[key] = per_key.get(key, 0) + 1
     assert per_key == {
-        ("Shop", "shuffle"): 2,
-        ("Bank", "shuffle"): 1,
+        ("Shop", "add_params"): 2,
+        ("Bank", "add_params"): 1,
         ("Shop", "miss_func"): 2,
         ("Bank", "miss_func"): 1,
     }
@@ -103,7 +103,7 @@ def variant(task: str) -> Variant:
     return Variant(
         scenario="Shop",
         task=task,
-        meta=TaskMeta(augmentations=["shuffle"], source_task_idx=0),
+        meta=TaskMeta(augmentations=["add_params"], source_task_idx=0),
         verifier_code="code",
     )
 
@@ -120,7 +120,7 @@ def test_merge_appends_tasks_meta_and_verifiers():
     assert "task_meta" not in new_items[1]
     added = new_verifiers[-1]
     assert added["task_idx"] == 2 and added["augmented"]
-    assert added["augmentations"] == ["shuffle"]
+    assert added["augmentations"] == ["add_params"]
 
 
 def test_merge_is_idempotent():

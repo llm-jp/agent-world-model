@@ -13,8 +13,6 @@ from awm.core.augment.task_parts import (
 from awm.core.augment.tool_parts import (
     AddParams,
     DistractorTools,
-    DropOptionalParams,
-    Shuffle,
     ToolDocParaphrase,
 )
 
@@ -34,11 +32,6 @@ def draft_of(out) -> Draft:
 # ------------------------------------------------------------ tool parts
 
 
-def test_shuffle_needs_two_tools():
-    assert Shuffle().apply(make_draft(), RNG) is not None
-    assert Shuffle().apply(make_draft(tools=[{"name": "a"}]), RNG) is None
-
-
 def test_add_params_avoids_names_already_taken():
     tool = {
         "name": "t",
@@ -48,17 +41,6 @@ def test_add_params_avoids_names_already_taken():
     assert out.view.extra_params == {
         "t": {"client_version": out.view.extra_params["t"]["client_version"]}
     }
-
-
-def test_drop_optional_params_keeps_used_and_required():
-    out = DropOptionalParams().apply(make_draft(), RNG)
-    assert out is not None
-    # limit is optional and unused; note is optional but used
-    assert out.view.drop_params == {"search_products": ["limit"]}
-
-
-def test_drop_optional_params_needs_reference():
-    assert not DropOptionalParams().applicable(make_draft(reference_calls=None))
 
 
 def test_distractor_tools_adds_tools_from_other_scenarios():

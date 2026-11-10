@@ -12,7 +12,11 @@ TASK_ROWS = [
     {
         "scenario": "Shop",
         "tasks": ["t0", "t1", "augmented"],
-        "task_meta": [None, None, {"augmentations": ["shuffle"], "source_task_idx": 0}],
+        "task_meta": [
+            None,
+            None,
+            {"augmentations": ["add_params"], "source_task_idx": 0},
+        ],
     },
     {"scenario": "Bank", "tasks": ["b0"]},
     {
@@ -75,7 +79,7 @@ def test_existing_variants_drop_task_meta_of_an_older_format():
                     "source_task_idx": 0,
                     "tool_view": {"rename_tools": {"a": "b"}},
                 },
-                {"augmentations": ["shuffle"], "source_task_idx": 0},
+                {"augmentations": ["add_params"], "source_task_idx": 0},
             ],
         }
     ]

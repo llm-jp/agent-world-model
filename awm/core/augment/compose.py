@@ -18,8 +18,6 @@ from awm.core.augment.task_parts import (
 from awm.core.augment.tool_parts import (
     AddParams,
     DistractorTools,
-    DropOptionalParams,
-    Shuffle,
     ToolDocParaphrase,
 )
 from awm.core.tool_view import TaskMeta
@@ -30,9 +28,7 @@ logger = logging.getLogger(__name__)
 PARTS: dict[str, Part] = {
     part.name: part
     for part in [
-        Shuffle(),
         AddParams(),
-        DropOptionalParams(),
         DistractorTools(),
         ToolDocParaphrase(),
         TaskParaphrase(),

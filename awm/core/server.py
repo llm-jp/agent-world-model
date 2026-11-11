@@ -29,9 +29,9 @@ class Config:
     db_path: str | None = None  # specify a path to load the database file, xxx.db
     host: str = "127.0.0.1"
     port: int = 8001
-    temp_server_path: str | None = (
-        None  # specify a temp server path, the code will be written to this path
-    )
+    # path the server code is written to and run from; defaults to
+    # <output_dir>/server_code.py, which no other server shares
+    temp_server_path: str | None = None
     # Path to generated db schemas file (used when db_path is None to create DB from schema)
     db_schema_path: str = "./outputs/gen_db.jsonl"
     # Path to generated sample data file (used when db_path is None)
@@ -107,7 +107,7 @@ def _prepare_database(config: Config, output_dir: str) -> str:
     return db_file_path
 
 
-def _generate_server_code(config: Config, db_path: str) -> str:
+def _generate_server_code(config: Config, db_path: str, output_dir: str) -> str:
     """Generate the MCP server code and write it to a file.
 
     Returns the path to the generated server code file.
@@ -150,11 +150,10 @@ def _generate_server_code(config: Config, db_path: str) -> str:
 
     server_code = "\n".join(new_code)
 
+    # The code holds this server's database path, so servers of one scenario
+    # running at the same time must not share the file.
     if config.temp_server_path is None:
-        config.temp_server_path = os.path.join(
-            os.path.dirname(config.envs_load_path),
-            f"temp_server_{config.scenario.lower()}.py",
-        )
+        config.temp_server_path = os.path.join(output_dir, "server_code.py")
 
     with open(config.temp_server_path, "w", encoding="utf-8") as f:
         f.write(server_code)
@@ -165,10 +164,12 @@ def _generate_server_code(config: Config, db_path: str) -> str:
 def run_server(config: Config):
     output_dir = _prepare_server_dir(config)
     db_path = _prepare_database(config, output_dir)
-    server_code_path = _generate_server_code(config, db_path)
+    server_code_path = _generate_server_code(config, db_path, output_dir)
 
-    # Save a copy of server code to output dir
-    shutil.copy2(server_code_path, os.path.join(output_dir, "server_code.py"))
+    # keep a copy in output_dir when --temp_server_path put the code elsewhere
+    saved_code_path = os.path.join(output_dir, "server_code.py")
+    if os.path.abspath(server_code_path) != os.path.abspath(saved_code_path):
+        shutil.copy2(server_code_path, saved_code_path)
 
     logger.info(f"Server artifacts saved to {output_dir}")
     logger.info(f"Starting server for {config.scenario} on {config.host}:{config.port}")

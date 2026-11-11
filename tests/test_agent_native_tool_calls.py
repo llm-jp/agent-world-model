@@ -183,3 +183,15 @@ def test_native_run_keeps_only_the_executed_call_in_the_history(tmp_path, monkey
         {"turn": 0, "tool_name": "list_products", "arguments": {}}
     ]
 
+
+def test_both_tool_call_formats_describe_the_functions_alike():
+    prompt = agent.get_system_prompt()
+    for tool in agent.NATIVE_TOOLS:
+        function = tool["function"]
+        assert function["name"] in prompt
+        properties = function.get("parameters", {}).get("properties")
+        assert isinstance(properties, dict)
+        for param in properties.values():
+            assert param["description"] in prompt
+    assert agent.PROMPT_INTRO in agent.get_native_system_prompt()
+    assert agent.PROMPT_RULES in agent.get_native_system_prompt()

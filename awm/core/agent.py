@@ -91,18 +91,28 @@ class Config:
             )
 
 
+# texts of the two functions the agent calls, shared by the system prompt with
+# <tool_call> tags and by the tools of the chat API (native_tool_calls)
+LIST_TOOLS_DOC = "List all available MCP tools for the current environment to help you finish the user task."
+LIST_TOOLS_OUTPUT = "A list of MCP environment-specific tools and their descriptions"
+CALL_TOOL_DOC = "Call a MCP environment-specific tool"
+CALL_TOOL_OUTPUT = "the result of the <tool_name> tool call"
+TOOL_NAME_DOC = "the tool name in the list_tools output"
 CALL_TOOL_ARGUMENTS_DOC = (
     "the arguments for calling <tool_name>. You must pass a valid JSON string without any "
     "markdown fences or additional commentary. This JSON str will be parsed by the tool and "
     "executed. You can pass an empty JSON str if no arguments are required by <tool_name>."
 )
 
+PROMPT_INTRO = "You are at a MCP environment. You need to call MCP tools to assist with the user query. At each step, you can only call one function. You have already logged in, and your user id is 1 if required for the MCP tool."
+PROMPT_RULES = "You should always call list_tools function first to get the available tools, and should only call it once. You should always directly output the answer or summary at the final step instead of calling any function."
+
 NATIVE_TOOLS: list[ChatCompletionFunctionToolParam] = [
     {
         "type": "function",
         "function": {
             "name": "list_tools",
-            "description": "List all available MCP tools for the current environment to help you finish the user task.",
+            "description": LIST_TOOLS_DOC,
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -110,14 +120,11 @@ NATIVE_TOOLS: list[ChatCompletionFunctionToolParam] = [
         "type": "function",
         "function": {
             "name": "call_tool",
-            "description": "Call a MCP environment-specific tool. Returns the result of the <tool_name> tool call.",
+            "description": f"{CALL_TOOL_DOC}. Returns {CALL_TOOL_OUTPUT}.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "tool_name": {
-                        "type": "string",
-                        "description": "the tool name in the list_tools output",
-                    },
+                    "tool_name": {"type": "string", "description": TOOL_NAME_DOC},
                     "arguments": {
                         "type": "string",
                         "description": CALL_TOOL_ARGUMENTS_DOC,
@@ -131,41 +138,42 @@ NATIVE_TOOLS: list[ChatCompletionFunctionToolParam] = [
 
 
 def get_native_system_prompt() -> str:
-    return dedent("""\
-        # MCP Tools
-
-        You are at a MCP environment. You need to call MCP tools to assist with the user query. At each step, you can only call one function. You have already logged in, and your user id is 1 if required for the MCP tool.
-
-        You are provided with two functions: list_tools, which lists the MCP environment-specific tools, and call_tool, which calls one of them.
-
-        You should always call list_tools function first to get the available tools, and should only call it once. You should always directly output the answer or summary at the final step instead of calling any function.""")
+    return (
+        "# MCP Tools\n\n"
+        f"{PROMPT_INTRO}\n\n"
+        "You are provided with two functions: list_tools, which lists the MCP environment-specific tools, and call_tool, which calls one of them.\n\n"
+        f"{PROMPT_RULES}"
+    )
 
 
 def get_system_prompt() -> str:
-    tools_str = dedent("""\
-        1. list_tools
-            - Description: List all available MCP tools for the current environment to help you finish the user task.
-            - Arguments: None
-            - Output: A list of MCP environment-specific tools and their descriptions
-
-        2. call_tool
-            - Description: Call a MCP environment-specific tool
-            - Arguments:
-                - tool_name: str, required, the tool name in the list_tools output
-                - arguments: str, required, the arguments for calling <tool_name>. You must pass a valid JSON string without any markdown fences or additional commentary. This JSON str will be parsed by the tool and executed. You can pass an empty JSON str if no arguments are required by <tool_name>.
-            - Output: The result of the <tool_name> tool call""")
+    tools_str = "\n".join(
+        [
+            "1. list_tools",
+            f"    - Description: {LIST_TOOLS_DOC}",
+            "    - Arguments: None",
+            f"    - Output: {LIST_TOOLS_OUTPUT}",
+            "",
+            "2. call_tool",
+            f"    - Description: {CALL_TOOL_DOC}",
+            "    - Arguments:",
+            f"        - tool_name: str, required, {TOOL_NAME_DOC}",
+            f"        - arguments: str, required, {CALL_TOOL_ARGUMENTS_DOC}",
+            f"    - Output: {CALL_TOOL_OUTPUT.capitalize()}",
+        ]
+    )
 
     return dedent(f"""\
         # MCP Toolss
 
-        You are at a MCP environment. You need to call MCP tools to assist with the user query. At each step, you can only call one function. You have already logged in, and your user id is 1 if required for the MCP tool.
+        {PROMPT_INTRO}
 
         You are provided with TWO functions within <tools></tools> XML tags:
         <tools>
         {tools_str}
         </tools>
 
-        You should always call list_tools function first to get the available tools, and should only call it once. You should always directly output the answer or summary at the final step instead of calling any function.
+        {PROMPT_RULES}
 
         For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
         <tool_call>

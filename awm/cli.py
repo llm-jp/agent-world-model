@@ -14,6 +14,8 @@ class TopCmd(Enum):
     agent = "agent"
     # Verify agent run outputs using code-augmented LLM-as-a-Judge or purely code-based Judge
     verify = "verify"
+    # Summarize the graded runs of a dataset (gen_reference.jsonl): solve rates per part and scenario
+    report = "report"
     # please install mcp-adapated-bench first, for benchmarking agents on mcp-adapted-bench including bfclv3, tau2, and mcp-universe
     bench = "bench"
 
@@ -60,6 +62,7 @@ def _build_commands() -> dict:
     from awm.core.env import Config as EnvConfig
     from awm.core.pipeline import Config as PipelineConfig
     from awm.core.reference import Config as ReferenceConfig
+    from awm.core.report import Config as ReportConfig
     from awm.core.reset import Config as ResetConfig
     from awm.core.sample import Config as SampleConfig
     from awm.core.scenario import Config as ScenarioConfig
@@ -96,6 +99,7 @@ def _build_commands() -> dict:
         },
         TopCmd.agent: AgentConfig,
         TopCmd.verify: VerifyConfig,
+        TopCmd.report: ReportConfig,
         TopCmd.bench: InferEvalConfig,
     }
 
@@ -118,6 +122,7 @@ DISPATCH = {
     (TopCmd.env, EnvCmd.reset_db): "awm.core.reset",
     (TopCmd.agent,): "awm.core.agent",
     (TopCmd.verify,): "awm.core.verify",
+    (TopCmd.report,): "awm.core.report",
     (TopCmd.bench,): "awm.eval.infer_eval",
 }
 

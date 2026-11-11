@@ -4,6 +4,8 @@ Task augmentation needs to know which tools and arguments solve a task (to
 hide a tool or remove a parameter) and which tools each scenario offers. This
 stage runs the agent on every original task, grades the run with the
 code-mode verifier and stores the tool calls, plus the tool list per scenario.
+With include_augmented it also solves the tasks of augmented environments, to
+synthesize trajectories for a whole dataset.
 """
 
 import asyncio
@@ -28,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Config:
-    # gen_tasks.jsonl; augmented tasks and rebuilt environments are skipped
+    # gen_tasks.jsonl; augmented tasks and environments are skipped
+    # unless include_augmented is set
     input_task: str
     # code-mode verifier file (gen_verifier.pure_code.jsonl)
     input_verifier: str
@@ -52,6 +55,8 @@ class Config:
     allowed_scenarios: list[str] | None = None
     # run at most this many tasks, for a sample run
     limit: int | None = None
+    # also solve the tasks of augmented environments
+    include_augmented: bool = False
     # see awm.core.agent.Config
     native_tool_calls: bool = False
     reasoning_effort: str | None = None
@@ -79,10 +84,12 @@ def pending_tasks(
     task_items: list[dict],
     done: set[tuple[str, int]],
     allowed_scenarios: list[str] | None,
+    include_augmented: bool = False,
 ) -> list[tuple[str, int, str]]:
-    """(scenario, task_idx, task) of original tasks without a reference yet."""
+    """(scenario, task_idx, task) of tasks without a reference yet."""
+    rows = task_items if include_augmented else original_task_rows(task_items)
     pending = []
-    for item in original_task_rows(task_items):
+    for item in rows:
         scenario = normalize_scenario_name(item["scenario"])
         if allowed_scenarios and scenario not in allowed_scenarios:
             continue
@@ -174,7 +181,10 @@ async def run_all(config: Config) -> None:
         }
 
     pending = pending_tasks(
-        tools_jsonl_load(config.input_task), done, config.allowed_scenarios
+        tools_jsonl_load(config.input_task),
+        done,
+        config.allowed_scenarios,
+        config.include_augmented,
     )
     if config.limit is not None:
         pending = pending[: config.limit]

@@ -133,6 +133,7 @@ Available commands:
   └── reset_db   Reset databases to initial state
   agent      Run a tool-use agent to solve a task by interacting with the environment
   verify     Verify agent run outputs using code-augmented LLM-as-a-Judge or purely code-based Judge
+  report     Summarize the graded runs of a dataset: solve rates per part and scenario
   bench      Run evaluation on mcp-adapted-bench including bfclv3, tau2, and mcp-universe
 ```
 
@@ -314,6 +315,20 @@ sbatch scripts/run_gen_aug.sh -o outputs/<dir> -p "tool_rename_random,tool_renam
 ```
 
 Rerunning a generation stage does not touch the output directory, so rerun `awm gen aug` afterwards to bring them up to date. With `--allowed_scenarios`, the other scenarios keep what the output directory already has for them; augmented tasks written by an older version of `awm gen aug` (e.g. a `task_meta` with `rename_tools`) cannot be read any more and are dropped. If the input files themselves hold augmented data, `awm gen aug` skips it, and the generation stages read only the original tasks of the original scenarios and keep the rows of rebuilt environments when they rewrite their files.
+
+### Evaluating a Model on the Environments
+`scripts/run_gen_traj.sh` lets a model solve every task of a dataset, the tasks of augmented environments included, at temperature 0 by default. Each run keeps its trajectory at `<output_dir>/reference_runs/<scenario>/task_<i>/trajectory.json` and its code-mode verdict in `<output_dir>/gen_reference.jsonl`. At the end, `awm report` summarizes the verdicts into `<output_dir>/report.json` and the job log: the share of tasks solved overall, per augmentation part (`original` for the source tasks) and per source scenario, and, per part, the share of augmented tasks solved among those whose source task was solved.
+
+```bash
+# solve outputs/<dir>_aug with an llm-jp model and report; -e only rebuilds the report
+sbatch scripts/run_gen_traj.sh -m llm-jp/llm-jp-4.1-33b-thinking -d outputs/<dir>_aug
+sbatch scripts/run_gen_traj.sh -m llm-jp/llm-jp-4.1-33b-thinking -d outputs/<dir>_aug -e
+
+# the report alone
+awm report \
+    --input_task outputs/<dir>_aug/gen_tasks.jsonl \
+    --input_reference outputs/<dir>_aug/traj_<model>/gen_reference.jsonl
+```
 
 ## Benchmark
 To align the evaluation with the trained tool-use protocol that requires agents to finish the task via unified MCP interface: `list_tools` and `call_tool`, we modified and adapated the evaluation harness of the following benchmarks: BFCLv3, τ²-bench-verified, and MCP-Universe. See more details at [mcp-adapted-bench](https://github.com/Raibows/mcp-adapted-bench). Remember to set the aforementioned env vars for the LLM agent API config before running the evaluation.

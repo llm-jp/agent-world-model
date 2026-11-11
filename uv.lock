@@ -59,6 +59,7 @@ dependencies = [
     { name = "httpx" },
     { name = "json-repair" },
     { name = "jsonschema" },
+    { name = "llm-jp-vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mcp" },
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
     { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13' or sys_platform == 'emscripten' or sys_platform == 'win32'" },
@@ -90,6 +91,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "json-repair", specifier = ">=0.56.0" },
     { name = "jsonschema", specifier = ">=4.26.0" },
+    { name = "llm-jp-vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.1.1" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "mcp-adapted-bench", marker = "extra == 'bench'", editable = "mcp-adapted-bench" },
     { name = "numpy", specifier = ">=2" },
@@ -2811,6 +2813,20 @@ sdist = { url = "https://files.pythonhosted.org/packages/da/91/6bc8bb503dc259e46
 wheels = [
     { url = "https://files.pythonhosted.org/packages/11/90/37cc12dd44c1f8fd84d5cc4e293467febe5a9899d6b55805485af7c21c9a/llguidance-1.7.6-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4e4f2a489c1c3943bb1b3c206b45794153cb6954f45cd3de8e02198319ddc6b1", size = 3485304, upload-time = "2026-06-03T20:13:03.504Z" },
     { url = "https://files.pythonhosted.org/packages/1a/64/d74336f22242ef94356a456057d4ff1be7c1bc9c7dbc867171c6982a5512/llguidance-1.7.6-cp39-abi3-manylinux_2_31_x86_64.whl", hash = "sha256:ceec951d29a74309984e3be0fe7f5f56c1362434cd937abd517b259a60908b1e", size = 3074809, upload-time = "2026-06-03T20:13:15.498Z" },
+]
+
+[[package]]
+name = "llm-jp-vllm"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch" },
+    { name = "transformers" },
+    { name = "vllm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c7/e6/a50634332f3dd5c9d5745979dfe2af3ca0cffe306b6d44adf513ef215d87/llm_jp_vllm-0.1.1.tar.gz", hash = "sha256:d45544586f38498227cc611673ca93f223df5b65173cbc0ce58dbbf018a1fafb", size = 13108, upload-time = "2026-09-28T07:06:59.644Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a2/e6/5992ad0f160ab13ac988e582a8a38e5a2adb18d94817169bb8570a1bfb55/llm_jp_vllm-0.1.1-py3-none-any.whl", hash = "sha256:5091257b495fe5470f2a3a1c5515aa4ca7838932505d67b14629d14de412900e", size = 14606, upload-time = "2026-09-28T07:06:58.494Z" },
 ]
 
 [[package]]

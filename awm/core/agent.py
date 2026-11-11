@@ -17,7 +17,12 @@ from textwrap import dedent
 
 from mcp.types import TextContent
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat import (
+    ChatCompletionFunctionToolParam,
+    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionMessageParam,
+    ChatCompletionMessageToolCallUnion,
+)
 
 from awm.core.server import serve_scenario
 from awm.core.tool_view import PresentedTools, TaskMeta, ToolCallRejected
@@ -57,8 +62,8 @@ class Config:
     max_iterations: int = 30
     # Generation temperature
     temperature: float = 1.0
-    # Max completion tokens
-    max_tokens: int = 2048
+    # Max completion tokens; none leaves it to the server (vLLM: the rest of the context)
+    max_tokens: int | None = 2048
     # Output directory for saving trajectory. Defaults to outputs/agents/<timestamp>
     output_dir: str | None = None
     # Path to generated environments file
@@ -71,6 +76,12 @@ class Config:
     sample_path: str = "./outputs/gen_sample.jsonl"
     # Verbose logging
     verbose: bool = True
+    # Pass list_tools and call_tool as tools of the chat API and read the calls the
+    # server parsed (vLLM --tool-call-parser), instead of <tool_call> tags in the reply
+    native_tool_calls: bool = False
+    # reasoning_effort of the chat API (low, medium, high), for models whose chat
+    # template reads it (e.g. llm-jp-4.1); none leaves it to the template
+    reasoning_effort: str | None = None
 
     def pre_process(self):
         if self.task is None:
@@ -78,6 +89,56 @@ class Config:
             assert self.scenario is not None and self.task_id is not None, (
                 "task is None, you must specify the scenario and task_id to lookup the task"
             )
+
+
+CALL_TOOL_ARGUMENTS_DOC = (
+    "the arguments for calling <tool_name>. You must pass a valid JSON string without any "
+    "markdown fences or additional commentary. This JSON str will be parsed by the tool and "
+    "executed. You can pass an empty JSON str if no arguments are required by <tool_name>."
+)
+
+NATIVE_TOOLS: list[ChatCompletionFunctionToolParam] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tools",
+            "description": "List all available MCP tools for the current environment to help you finish the user task.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "call_tool",
+            "description": "Call a MCP environment-specific tool. Returns the result of the <tool_name> tool call.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "the tool name in the list_tools output",
+                    },
+                    "arguments": {
+                        "type": "string",
+                        "description": CALL_TOOL_ARGUMENTS_DOC,
+                    },
+                },
+                "required": ["tool_name", "arguments"],
+            },
+        },
+    },
+]
+
+
+def get_native_system_prompt() -> str:
+    return dedent("""\
+        # MCP Tools
+
+        You are at a MCP environment. You need to call MCP tools to assist with the user query. At each step, you can only call one function. You have already logged in, and your user id is 1 if required for the MCP tool.
+
+        You are provided with two functions: list_tools, which lists the MCP environment-specific tools, and call_tool, which calls one of them.
+
+        You should always call list_tools function first to get the available tools, and should only call it once. You should always directly output the answer or summary at the final step instead of calling any function.""")
 
 
 def get_system_prompt() -> str:
@@ -304,13 +365,10 @@ class MCPToolExecutor:
         return text
 
 
-async def generate_response(
-    client: AsyncOpenAI,
-    model_name: str,
-    messages: list[dict],
-    config: Config,
-    use_vllm_extras: bool = False,
-) -> tuple[str, list[dict]]:
+def to_api_messages(
+    messages: list[dict], native_tool_calls: bool, use_vllm_extras: bool
+) -> list[ChatCompletionMessageParam]:
+    """The agent's messages in the chat API format."""
     api_messages: list[ChatCompletionMessageParam] = []
     for msg in messages:
         role = msg["role"]
@@ -321,9 +379,30 @@ async def generate_response(
         elif role == "user":
             api_messages.append({"role": "user", "content": content})
         elif role == "assistant":
-            api_messages.append({"role": "assistant", "content": content})
+            if native_tool_calls and msg.get("tool_calls"):
+                api_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content,
+                        "tool_calls": [
+                            {
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": json.dumps(
+                                        tc["arguments"] or {}, ensure_ascii=False
+                                    ),
+                                },
+                            }
+                            for tc in msg["tool_calls"]
+                        ],
+                    }
+                )
+            else:
+                api_messages.append({"role": "assistant", "content": content})
         elif role == "tool":
-            if use_vllm_extras:
+            if native_tool_calls or use_vllm_extras:
                 api_messages.append(
                     {
                         "role": "tool",
@@ -337,12 +416,50 @@ async def generate_response(
                 api_messages.append(
                     {"role": "user", "content": f"Tool response:\n{content}"}
                 )
+    return api_messages
 
+
+def parse_native_tool_calls(
+    tool_calls: list[ChatCompletionMessageToolCallUnion] | None,
+) -> list[dict]:
+    """Tool calls the server parsed, in the form parse_tool_calls returns."""
+    parsed = []
+    for tc in tool_calls or []:
+        # NATIVE_TOOLS are all function tools, so other kinds of call cannot match them
+        if not isinstance(tc, ChatCompletionMessageFunctionToolCall):
+            continue
+        arguments = tc.function.arguments
+        data = tools_robust_json_loads(arguments) if arguments.strip() else {}
+        if not isinstance(data, dict):
+            logger.warning(f"Failed to parse tool call arguments: {arguments[:100]}")
+            data = {}
+        parsed.append({"id": tc.id, "name": tc.function.name, "arguments": data})
+    return parsed
+
+
+async def generate_response(
+    client: AsyncOpenAI,
+    model_name: str,
+    messages: list[dict],
+    config: Config,
+    use_vllm_extras: bool = False,
+) -> tuple[str, list[dict]]:
+    api_messages = to_api_messages(messages, config.native_tool_calls, use_vllm_extras)
+
+    template_kwargs: dict[str, bool | str] = {"enable_thinking": True}
+    optional_args: dict = {}
+    if config.native_tool_calls:
+        optional_args["tools"] = NATIVE_TOOLS
+        optional_args["tool_choice"] = "auto"
+    if config.reasoning_effort is not None:
+        optional_args["reasoning_effort"] = config.reasoning_effort
+        # the template variable too, in case the server does not forward the field to it
+        template_kwargs["reasoning_effort"] = config.reasoning_effort
     extra_body = (
         {
             "add_generation_prompt": True,
             "min_tokens": 16,
-            "chat_template_kwargs": {"enable_thinking": True},
+            "chat_template_kwargs": template_kwargs,
         }
         if use_vllm_extras
         else None
@@ -354,10 +471,15 @@ async def generate_response(
         max_completion_tokens=config.max_tokens,
         temperature=config.temperature,
         extra_body=extra_body,
+        **optional_args,
     )
 
-    content = response.choices[0].message.content or ""
-    tool_calls = parse_tool_calls(content)
+    message = response.choices[0].message
+    content = message.content or ""
+    if config.native_tool_calls:
+        tool_calls = parse_native_tool_calls(message.tool_calls)
+    else:
+        tool_calls = parse_tool_calls(content)
 
     return content, tool_calls
 
@@ -466,7 +588,12 @@ async def run_agent(config: Config):
         tool_call_log: list[dict] = []
 
         messages: list[dict] = [
-            {"role": "system", "content": get_system_prompt()},
+            {
+                "role": "system",
+                "content": get_native_system_prompt()
+                if config.native_tool_calls
+                else get_system_prompt(),
+            },
             {"role": "user", "content": task},
         ]
 
@@ -490,7 +617,11 @@ async def run_agent(config: Config):
                 logger.info(f"Assistant ({len(content)} chars): {preview}")
                 logger.info(f"Tool calls: {len(tool_calls)}")
 
-            messages.append({"role": "assistant", "content": content})
+            assistant_message: dict = {"role": "assistant", "content": content}
+            if config.native_tool_calls and tool_calls:
+                # only the first call runs, and the chat API needs a reply to every call it sees
+                assistant_message["tool_calls"] = tool_calls[:1]
+            messages.append(assistant_message)
 
             # no tool calls -> the turn ends; scripted follow-ups continue the dialogue
             if not tool_calls and pending_turns:

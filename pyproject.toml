@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "json-repair>=0.56.0",
     "jsonschema>=4.26.0",
+    "llm-jp-vllm>=0.1.1 ; platform_machine == 'x86_64' and sys_platform == 'linux'",
     "mcp>=2.0.0",
     "numpy>=2",
     "openai>=2.17.0",

@@ -44,13 +44,17 @@ class Config:
     # agent model; defaults to AWM_SYN_OVERRIDE_MODEL
     model: str | None = None
     max_iterations: int = 30
-    max_tokens: int = 8192
+    # none leaves it to the server (vLLM: the rest of the context)
+    max_tokens: int | None = 8192
     temperature: float = 0.6
     # agent runs in parallel, each with its own MCP server
     concurrency: int = 16
     allowed_scenarios: list[str] | None = None
     # run at most this many tasks, for a sample run
     limit: int | None = None
+    # see awm.core.agent.Config
+    native_tool_calls: bool = False
+    reasoning_effort: str | None = None
 
     def pre_process(self):
         for path in [
@@ -111,6 +115,8 @@ async def solve_task(
                 db_path=config.db_path,
                 sample_path=config.sample_path,
                 verbose=False,
+                native_tool_calls=config.native_tool_calls,
+                reasoning_effort=config.reasoning_effort,
             )
         )
         verdict = await run_verify(

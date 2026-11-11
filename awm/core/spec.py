@@ -40,7 +40,7 @@ class Config:
 
 
 def generate_all_api_specs(args: Config):
-    # rebuilt environments and augmented tasks belong to `awm gen aug`
+    # augmented environments and tasks belong to `awm gen aug`
     tasks_data = original_task_rows(tools_jsonl_load(args.input_task))
     schema_data = tools_jsonl_load(args.input_db)
     schema_map = {

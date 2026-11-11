@@ -3,7 +3,7 @@ import json
 from typing import ClassVar
 
 from awm.core import agent
-from awm.core.tool_view import TaskMeta, ToolView, Turn
+from awm.core.tool_view import TaskMeta, Turn
 
 TOOLS = [
     {"name": "create_order", "description": "Order.", "inputSchema": {}},
@@ -67,8 +67,10 @@ def test_miss_func_dialogue_hides_then_reveals_the_tool(tmp_path, monkeypatch):
     meta = TaskMeta(
         augmentations=["miss_func"],
         source_task_idx=0,
-        tool_view=ToolView(hide_tools=["create_order"]),
-        turns=[Turn(user="create_order is available now", tool_view=ToolView())],
+        hidden_tools=["create_order"],
+        turns=[
+            Turn(user="create_order is available now", shown_tools=["create_order"])
+        ],
     )
     order = {"tool_name": "create_order", "arguments": '{"product_id": 42}'}
     data = run_scripted(
@@ -94,29 +96,3 @@ def test_miss_func_dialogue_hides_then_reveals_the_tool(tmp_path, monkeypatch):
     assert data["task_meta"]["augmentations"] == ["miss_func"]
     # without a database file (external MCP server) no snapshot can be taken
     assert data["turn_dbs"] == []
-
-
-def test_extra_params_are_dropped_before_the_server(tmp_path, monkeypatch):
-    meta = TaskMeta(
-        augmentations=["add_params"],
-        source_task_idx=0,
-        tool_view=ToolView(
-            extra_params={"create_order": {"request_id": {"type": "string"}}}
-        ),
-    )
-    run_scripted(
-        tmp_path,
-        monkeypatch,
-        meta,
-        [
-            tool_call(
-                "call_tool",
-                {
-                    "tool_name": "mcp_tool_create_order",
-                    "arguments": '{"request_id": "r"}',
-                },
-            ),
-            ("done", []),
-        ],
-    )
-    assert FakeMCP.calls == [("create_order", {})]

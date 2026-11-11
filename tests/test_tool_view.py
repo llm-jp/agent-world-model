@@ -1,6 +1,17 @@
-import pytest
+from typing import Any
 
-from awm.core.tool_view import PresentedTools, ToolCallRejected, ToolView
+import pytest
+from pydantic import ValidationError
+
+from awm.core.tool_view import (
+    VALUE_FORMATS,
+    PresentedTools,
+    TaskMeta,
+    ToolCallRejected,
+    Turn,
+    value_formats,
+)
+from awm.core.view_server import formatted_schema
 
 TOOLS = [
     {
@@ -27,68 +38,110 @@ def names(tools: list[dict]) -> list[str]:
     return [t["name"] for t in tools]
 
 
-def test_without_view_tools_and_calls_pass_through():
-    presented = PresentedTools(TOOLS, None)
+def test_without_hidden_tools_every_tool_is_seen_and_called():
+    presented = PresentedTools(TOOLS)
     assert presented.tools == TOOLS
-    assert presented.resolve("anything", {"a": 1}) == ("anything", {"a": 1})
+    presented.check("create_order")
 
 
-def test_unknown_tool_is_rejected():
-    presented = PresentedTools(TOOLS, ToolView())
-    with pytest.raises(ToolCallRejected):
-        presented.resolve("createOrder", {})
+def test_a_hidden_tool_is_not_seen_until_it_is_shown():
+    presented = PresentedTools(TOOLS, ["create_order"])
+    assert names(presented.tools) == ["list_products"]
+    with pytest.raises(ToolCallRejected, match="Unknown tool 'create_order'"):
+        presented.check("create_order")
+    presented.show(["create_order"])
+    assert names(presented.tools) == ["create_order", "list_products"]
+    presented.check("create_order")
 
 
-def test_hidden_and_distractor_tools_are_rejected():
-    distractor = {"name": "send_fax", "description": "Fax.", "inputSchema": {}}
-    view = ToolView(hide_tools=["create_order"], distractor_tools=[distractor])
-    presented = PresentedTools(TOOLS, view)
-    assert names(presented.tools) == ["list_products", "send_fax"]
-    for name in ["create_order", "send_fax"]:
-        with pytest.raises(ToolCallRejected):
-            presented.resolve(name, {})
-
-
-def test_extra_params_are_dropped_but_real_params_kept():
-    view = ToolView(
-        extra_params={
-            "create_order": {
-                "request_id": {"type": "string"},
-                # same name as a real parameter: the server's parameter wins
-                "note": {"type": "integer"},
-            }
+def test_task_meta_lists_hidden_tools_and_the_turn_that_shows_them():
+    meta = TaskMeta.model_validate(
+        {
+            "augmentations": ["miss_func"],
+            "source_task_idx": 0,
+            "hidden_tools": ["create_order"],
+            "turns": [{"user": "Go on.", "shown_tools": ["create_order"]}],
         }
     )
-    presented = PresentedTools(TOOLS, view)
-    props = presented.tools[0]["inputSchema"]["properties"]
-    assert props["note"]["type"] == "string"
-    assert "request_id" not in presented.tools[0]["inputSchema"]["required"]
-    assert presented.resolve(
-        "create_order", {"product_id": 1, "note": "n", "request_id": "r"}
-    ) == ("create_order", {"product_id": 1, "note": "n"})
+    assert meta.turns == [Turn(user="Go on.", shown_tools=["create_order"])]
 
 
-def test_descriptions():
-    view = ToolView(
-        tool_descriptions={"create_order": "Place an order."},
-        param_descriptions={"create_order": {"product_id": "ID of the product."}},
+def test_task_meta_with_a_view_for_the_client_is_refused():
+    with pytest.raises(ValidationError, match="run `awm gen aug` again"):
+        TaskMeta.model_validate(
+            {"augmentations": [], "source_task_idx": 0, "tool_view": None}
+        )
+
+
+# ------------------------------------------------------- values of parameters
+
+DATED: list[dict[str, Any]] = [
+    {
+        "name": "book_room",
+        "description": "Book a room.",
+        "inputSchema": {
+            "properties": {
+                "day": {
+                    "anyOf": [{"type": "string", "format": "date"}, {"type": "null"}],
+                    "description": "Day of the stay.",
+                    "default": None,
+                },
+                "nights": {
+                    "type": "integer",
+                    "description": "Nights.",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "example": 2,
+                },
+                "smoking": {"type": "boolean", "description": "Smoking room."},
+                "plan": {"type": "string", "description": "Plan."},
+            }
+        },
+    }
+]
+
+
+@pytest.mark.parametrize(
+    ("fmt", "server", "agent"),
+    [
+        ("date_compact", "2026-05-20", "20260520"),
+        ("date_slash", "2026-05-20", "2026/05/20"),
+        ("bool_yes_no", True, "yes"),
+        ("bool_yes_no", False, "no"),
+        ("int_string", -3, "-3"),
+    ],
+)
+def test_value_formats_convert_both_ways(fmt, server, agent):
+    value_format = VALUE_FORMATS[fmt]
+    assert value_format.to_agent(server) == agent
+    assert value_format.to_server(agent) == server
+
+
+def test_value_formats_fit_the_parameter_type_and_value():
+    props = DATED[0]["inputSchema"]["properties"]
+    assert value_formats(props["day"], "2026-05-20") == ["date_compact", "date_slash"]
+    assert value_formats(props["nights"], 2) == ["int_string"]
+    assert value_formats(props["smoking"], False) == ["bool_yes_no"]
+    assert value_formats(props["plan"], "standard") == []
+    assert value_formats(props["nights"], True) == []
+
+
+def test_formatted_schema_writes_the_value_in_the_format():
+    day = formatted_schema(DATED[0]["inputSchema"]["properties"]["day"], "date_compact")
+    assert day == {
+        "type": "string",
+        "pattern": r"^\d{8}$",
+        "description": "Day of the stay. Write the date as YYYYMMDD, e.g. 20260520.",
+    }
+
+
+def test_formatted_schema_drops_constraints_of_the_server_type():
+    nights = formatted_schema(
+        DATED[0]["inputSchema"]["properties"]["nights"], "int_string"
     )
-    order = PresentedTools(TOOLS, view).tools[0]
-    assert order["description"] == "Place an order."
-    assert list(order["inputSchema"]["properties"]) == ["product_id", "note"]
-    assert (
-        order["inputSchema"]["properties"]["product_id"]["description"]
-        == "ID of the product."
-    )
-
-
-def test_view_does_not_modify_the_original_tools():
-    before = repr(TOOLS)
-    PresentedTools(
-        TOOLS,
-        ToolView(
-            param_descriptions={"create_order": {"note": "Changed."}},
-            extra_params={"create_order": {"request_id": {"type": "string"}}},
-        ),
-    )
-    assert repr(TOOLS) == before
+    assert nights == {
+        "type": "string",
+        "pattern": r"^-?\d+$",
+        "example": "2",
+        "description": 'Nights. Write the number as a string of digits, e.g. "42".',
+    }

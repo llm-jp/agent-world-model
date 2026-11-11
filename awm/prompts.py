@@ -937,18 +937,6 @@ Now generate the verification code for the given task."""
 # Task augmentation: rewrites of a task that keep or deliberately remove information.
 AUG_TASK_REWRITE_SYSTEM_PROMPT = """You rewrite user requests given to an AI agent that completes tasks by calling tools. Follow the instructions exactly and return only a valid JSON object, without markdown fences or commentary."""
 
-AUG_TASK_PARAPHRASE_PROMPT = """Rewrite the following user request with different wording and sentence structure while keeping its meaning exactly the same.
-
-Request: {task}
-
-Requirements:
-1. The agent must have to do exactly the same things as for the original request
-2. Keep every one of these values verbatim in the rewritten request: {keep_values}
-3. Do not add, remove or change any condition, target or value
-4. Write in the same language as the original request
-
-Return {{"task": "<rewritten request>"}}"""
-
 AUG_TASK_AMBIGUOUS_PROMPT = """Rewrite the following user request so that it is phrased more vaguely and casually, the way a busy user might write it, while the goal stays the same.
 
 Request: {task}
@@ -987,6 +975,21 @@ Requirements:
 4. Write in the same language as the original request
 
 Return {{"task": "<rewritten request>"}}"""
+
+AUG_TASK_VALUE_FORMAT_PROMPT = """Rewrite how some values are written in the following user request, without changing what they mean.
+
+Request: {task}
+
+Values you may rewrite: {values}
+Values to keep verbatim: {keep_values}
+
+Requirements:
+1. Write at least one of the values you may rewrite in another notation, e.g. a date or time ("2026-05-20" as "May 20, 2026", "14:00" as "2 p.m."), a number or amount ("45000000" as "45 million") or a unit. The new notation must stand for exactly the same value, with nothing left to guess
+2. Leave identifiers, codes, names and quoted text as they are, even if they are among the values you may rewrite
+3. Keep every value to keep verbatim, and change nothing else in the request
+4. Write in the same language as the original request
+
+Return {{"task": "<rewritten request>", "rewrites": [{{"value": "<original value>", "written_as": "<its notation in the rewritten request>"}}]}}"""
 
 AUG_MISS_PARAM_PROMPT = """The following user request contains the value "{value}", which the agent passes as the parameter "{param}" of the tool "{tool_name}".
 
@@ -1047,6 +1050,8 @@ AUG_SELF_CHECK_SINGLE_TURN_BEHAVIOUR = (
 
 AUG_SELF_CHECK_FOLLOWUP_BEHAVIOUR = """cannot complete the request in the first turn, so it must not change any data and should ask the user for what is missing; in the first turn it must not make these calls (param null means any call of the tool): {forbidden_calls}. After the follow-up message it completes the request by making the reference calls."""
 
+AUG_SELF_CHECK_VALUE_FORMATS = """ The user messages write these argument values in another notation, as {{"value": "notation"}}, and the agent converts them back: {value_rewrites}. Count such a value as written in the user messages if the notation stands for exactly that value."""
+
 # Tool definitions are part of the environment, so the tool prompts stay in English.
 AUG_TOOL_FEEDBACK_PROMPT = """Your reply cannot be used because of these problems:
 {problems}
@@ -1064,6 +1069,30 @@ Requirements:
 
 Return {{"tools": {{"<original name>": "<new name>"}}}}"""
 
+AUG_PARAM_ENUM_PROMPT = """Some of the following string parameters take one of a few fixed values, such as a status, a type, a category or a sort order. Turn those into enums by listing their allowed values.
+
+Parameters (JSON, per tool: description and the values a solved request passed): {params_json}
+
+Requirements:
+1. Choose only parameters whose values come from a small fixed set. Leave out free text and open-ended values: names, titles, search words, messages, identifiers, codes, dates, times, numbers, emails and URLs
+2. List between {min_values} and {max_values} values for each chosen parameter, in the form the server expects (follow the description and the passed values)
+3. Every value a solved request passed to a chosen parameter must be among its values
+4. Choose at least one parameter
+
+Return {{"enums": {{"<tool name>": {{"<parameter name>": ["<value>", ...]}}}}}}"""
+
+AUG_PARAM_RENAME_PROMPT = """Give each of the following tool parameters a new name.
+
+Parameters (JSON, name to the tools that take it, with its description in each): {params_json}
+
+Requirements:
+1. Each new name must still describe what the parameter means, but use different words from the original name (e.g. synonyms, another word order); changing only the case or the separators is not enough
+2. A parameter name is one name for every tool that takes it, so give it a single new name
+3. Use only ASCII letters, digits and underscores, start with a letter, keep each name at most 64 characters, and do not use a Python keyword
+4. Every parameter gets a different new name, and no new name equals the original name of any parameter of the tools
+
+Return {{"params": {{"<original name>": "<new name>"}}}}"""
+
 AUG_ENV_RENAME_PROMPT = """Rename tools and parameters of the following FastAPI server. An MCP bridge exposes each route as a tool: the tool name is the route's operation_id, and the tool's parameters are the route's path, query and body parameters.
 
 Renames (JSON): {renames_json}
@@ -1077,8 +1106,9 @@ Server code:
 Requirements:
 1. Every tool is exposed under its new name: its operation_id is the new name
 2. Every renamed parameter is accepted under its new name only. Keep Python variable names and database tables and columns unchanged where you can, e.g. with alias= in Query(...), Path(...) or Field(...), or by renaming a path parameter in both the route path and the function signature
-3. Every text the client can see that refers to an old name uses the new name: summaries, descriptions, docstrings, Field descriptions, error messages and other response texts
-4. Nothing else changes: the behaviour, the database access and the data in the responses stay the same (field names in responses may follow the renamed parameters)
+3. Wherever the client can see an old name written out, write the new name instead: in summaries, descriptions, docstrings, Field descriptions, error messages and other response texts. An old tool name counts in any case and with spaces for underscores (e.g. "Create order" for create_order)
+4. Change only the names themselves and keep every other word, even words that also appear in a name: for create_order -> placeOrder, "Create an order" and "Order total" stay as they are
+5. Nothing else changes: the behaviour, the database access and the data in the responses stay the same (field names in responses may follow the renamed parameters)
 
 Return the changes as exact text replacements, applied in order to the code above:
 {{"edits": [{{"old": "<exact text of the current code, long enough to occur exactly once>", "new": "<replacement>"}}]}}"""
@@ -1093,9 +1123,9 @@ Diff of the server code:
 ```
 
 Check that:
-1. Every text the client can see that refers to an old tool or parameter name, in any form (e.g. "create order" for create_order), now uses the new name
+1. Wherever the client can see an old tool or parameter name written out (an old tool name in any case and with spaces for underscores, e.g. "create order" for create_order), the new name is used
 2. Apart from the names, the behaviour, the database access and the data in the responses are unchanged
-3. No change is unrelated to the renames
+3. No other text is reworded, including words that are only part of a name (e.g. "order" in "Order total" for create_order)
 
 Return {{"consistent": true, "problems": []}} if every check passes, and otherwise {{"consistent": false, "problems": ["<a concrete problem and how to fix it>", ...]}}"""
 
@@ -1121,13 +1151,14 @@ if os.environ.get("AWM_SYN_LANG", "en") == "ja":
         AUG_SELF_CHECK_NO_FOLLOWUP,
         AUG_SELF_CHECK_PROMPT,
         AUG_SELF_CHECK_SINGLE_TURN_BEHAVIOUR,
+        AUG_SELF_CHECK_VALUE_FORMATS,
         AUG_TASK_AMBIGUOUS_PROMPT,
         AUG_TASK_DISTRACTOR_NAMES_PROMPT,
         AUG_TASK_FEEDBACK_PROMPT,
         AUG_TASK_NO_TOOL_NAMES_PROMPT,
-        AUG_TASK_PARAPHRASE_PROMPT,
         AUG_TASK_RENAME_PROMPT,
         AUG_TASK_REWRITE_SYSTEM_PROMPT,
+        AUG_TASK_VALUE_FORMAT_PROMPT,
         SAMPLE_DATA_GENERATION_SYSTEM_PROMPT,
         SAMPLE_DATA_GENERATION_USER_PROMPT,
         SCENARIO_CATEGORY_DIVERSITY_PROMPT,

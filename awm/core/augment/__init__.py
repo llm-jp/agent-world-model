@@ -2,41 +2,34 @@
 
 The input files are left as they are. The output directory gets files of the
 same names (gen_tasks.jsonl, the verifier file, gen_envs.jsonl, ...), and
-together they are a whole dataset so that RL reads a single one: augmented
-tasks are appended to each scenario's `tasks`, with their settings in a
-parallel `task_meta` list (None for original tasks), and their verifiers follow
-the original ones under the same (scenario, task_idx).
+together they are a whole dataset so that RL reads a single one.
 
-Each augmentation is a part applied on its own to a source task. Parts that
-rename tools or parameters (env_parts.py) rebuild the environment instead and
-add it as a scenario of its own to every scenario file.
+Each augmentation is a recipe: parts applied one after another to a source
+task (recipe.py). A recipe's tasks for a source scenario form an environment of
+their own, <scenario>__<recipe>, added to every scenario file (dataset.py) with
+the settings of each task in a `task_meta` list. Parts that rename tools or
+parameters (env_parts.py) also rewrite the environment's server code, and the
+parts that change how the tools are presented (tool_parts.py) have the
+server present them, so an RL trainer that reads only the scenario files sees
+the augmented tools.
 """
 
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from awm.core.augment.compose import (
-    PARTS,
-    check_part_names,
-    existing_variants,
-    generate_variants,
-    merge_variants,
-)
+from awm.core.augment.dataset import merge_env_variants
 from awm.core.augment.draft import Draft, LLMStep
-from awm.core.augment.env_parts import (
-    ENV_PARTS,
-    ReplayContext,
-    ScenarioSource,
-    build_env_variants,
-    merge_env_variants,
-)
+from awm.core.augment.part import PartContext, RunLLM
+from awm.core.augment.recipe import PARTS, parse_recipe, run_recipe
 from awm.core.augment.refine import Complete, refine
+from awm.core.augment.replay import ReplayContext
 from awm.gpt import GPTClient
 from awm.tools import (
-    is_rebuilt_env_row,
+    is_augmented_env_row,
     normalize_scenario_name,
-    strip_augmented,
+    original_task_rows,
     tools_jsonl_load,
     tools_jsonl_save,
 )
@@ -54,40 +47,51 @@ class Config:
     input_reference: str
     # gen_tools.jsonl from `awm gen reference`
     input_tools: str
-    # scenario files; rebuilt environments are added to their outputs
+    # scenario files; augmented environments are added to their outputs
     envs_path: str = "./outputs/gen_envs.jsonl"
     db_path: str = "./outputs/gen_db.jsonl"
     sample_path: str = "./outputs/gen_sample.jsonl"
+    # gen_scenario.jsonl, the list of scenarios an RL trainer offers;
+    # defaults to the one next to envs_path
+    scenario_path: str | None = None
     # the dataset with augmented data, under the input file names;
     # defaults to <input_task dir>_aug, e.g. outputs/<model>_ja -> outputs/<model>_ja_aug
     output_dir: str | None = None
-    # servers and databases of the replays that check rebuilt environments;
+    # servers and databases of the replays that check rewritten server code;
     # defaults to <output_dir>/aug_env_runs
     work_dir: str | None = None
-    # comma-separated part names, each applied on its own; defaults to every part
+    # comma-separated recipes, each part names joined by "+" (e.g.
+    # "tool_rename+task_ambiguous,miss_param"); defaults to every part on its own
     parts: list[str] | None = None
-    # augmented tasks per scenario and part
+    # augmented tasks per scenario and recipe
     num_per_part: int = 2
     seed: int = 0
     model: str = "your-llm-model-name"
     allowed_scenarios: list[str] | None = None
     # replies generated per LLM rewrite before it is dropped, feedback included
     max_generations: int = 3
-    # concurrent LLM requests, and concurrent replays of rebuilt environments
+    # concurrent LLM requests, and concurrent replays of rewritten server code
     max_concurrency: int = 32
 
     def input_paths(self) -> list[str]:
         """Inputs that are written again, with augmented data, to output_dir."""
+        assert self.scenario_path is not None
         return [
             self.input_task,
             self.input_verifier,
             self.envs_path,
             self.db_path,
             self.sample_path,
+            self.scenario_path,
         ]
 
     def pre_process(self):
+        if self.scenario_path is None:
+            self.scenario_path = os.path.join(
+                os.path.dirname(self.envs_path), "gen_scenario.jsonl"
+            )
         for path in [
+            self.scenario_path,
             self.input_task,
             self.input_verifier,
             self.input_reference,
@@ -98,8 +102,9 @@ class Config:
         ]:
             assert os.path.exists(path), f"{path} not found"
         if self.parts is None:
-            self.parts = [*PARTS, *ENV_PARTS]
-        check_part_names(self.parts)
+            self.parts = list(PARTS)
+        for recipe in self.parts:
+            parse_recipe(recipe)
         if self.output_dir is None:
             input_dir = os.path.abspath(os.path.dirname(self.input_task))
             self.output_dir = os.path.relpath(f"{input_dir}_aug")
@@ -144,7 +149,7 @@ def load_drafts(config: Config, task_items: list[dict]) -> list[Draft]:
         if config.allowed_scenarios and scenario not in config.allowed_scenarios:
             continue
         other_tools = [t for name, ts in tools.items() if name != scenario for t in ts]
-        for task_idx, task in enumerate(strip_augmented(item)):
+        for task_idx, task in enumerate(item["tasks"]):
             code = verifiers.get((scenario, task_idx))
             if not code:
                 continue
@@ -164,25 +169,20 @@ def load_drafts(config: Config, task_items: list[dict]) -> list[Draft]:
     return drafts
 
 
-def scenario_sources(drafts: list[Draft], env_rows: list[dict]) -> list[ScenarioSource]:
-    """Scenarios that have an environment, a tool list and solved tasks."""
-    envs = {normalize_scenario_name(r["scenario"]): r for r in env_rows}
-    by_scenario: dict[str, list[Draft]] = {}
+def drafts_by_scenario(drafts: list[Draft]) -> dict[str, list[Draft]]:
+    grouped: dict[str, list[Draft]] = {}
     for draft in drafts:
-        by_scenario.setdefault(normalize_scenario_name(draft.scenario), []).append(
-            draft
-        )
-    sources = []
-    for scenario, scenario_drafts in by_scenario.items():
-        solved = [d for d in scenario_drafts if d.reference_calls]
-        tools = scenario_drafts[0].tools
-        if scenario in envs and tools and solved:
-            sources.append(
-                ScenarioSource(
-                    scenario_drafts[0].scenario, envs[scenario], tools, solved
-                )
-            )
-    return sources
+        grouped.setdefault(normalize_scenario_name(draft.scenario), []).append(draft)
+    return grouped
+
+
+def llm_runner(complete: Complete, max_generations: int) -> RunLLM:
+    """Runs LLM steps, sending problems back until a reply is usable."""
+
+    def run_llm[T](steps: Sequence[LLMStep[T]], workers: int = 1) -> list[T]:
+        return refine(steps, complete, max_generations, workers=workers)
+
+    return run_llm
 
 
 def llm_complete(config: Config) -> Complete:
@@ -224,91 +224,79 @@ def load_previous(path: str) -> list[dict]:
 def run(config: Config):
     assert config.parts is not None
     assert config.output_dir is not None and config.work_dir is not None
+    assert config.scenario_path is not None
     inputs = {
         "tasks": config.input_task,
         "verifiers": config.input_verifier,
         "envs": config.envs_path,
         "db": config.db_path,
         "sample": config.sample_path,
+        "scenarios": config.scenario_path,
     }
     outputs = {
         kind: output_path(path, config.output_dir) for kind, path in inputs.items()
     }
     # only original rows are augmented; augmented data already in the inputs is skipped
     rows = {
-        kind: [r for r in tools_jsonl_load(path) if not is_rebuilt_env_row(r)]
+        kind: [r for r in tools_jsonl_load(path) if not is_augmented_env_row(r)]
         for kind, path in inputs.items()
     }
-    base_items = rows.pop("tasks")
-    base_verifiers = rows.pop("verifiers")
+    rows["tasks"] = original_task_rows(rows["tasks"])
+    base_verifiers = [r for r in rows.pop("verifiers") if not r.get("augmented")]
 
-    drafts = load_drafts(config, base_items)
+    drafts = load_drafts(config, rows["tasks"])
     solved = sum(1 for d in drafts if d.reference_calls)
     logger.info(
         f"{len(drafts)} source tasks with a verifier, {solved} solved by the reference run"
     )
 
-    complete = llm_complete(config)
-
-    def run_llm(steps: list[LLMStep[Draft]]) -> list[Draft]:
-        return refine(steps, complete, config.max_generations)
-
-    task_parts = [p for p in config.parts if p in PARTS]
-    variants = generate_variants(
-        task_parts, drafts, config.num_per_part, config.seed, run_llm
-    )
-    # scenarios outside the selection keep what an earlier run wrote for them
-    previous = {
-        kind: load_previous(path) if config.allowed_scenarios else []
-        for kind, path in outputs.items()
-    }
-    keep_sources: set[str] = set()
-    if config.allowed_scenarios:
-        others = [
-            item
-            for item in previous["tasks"]
-            if not is_rebuilt_env_row(item)
-            and normalize_scenario_name(item["scenario"])
-            not in config.allowed_scenarios
-        ]
-        variants = existing_variants(others, previous["verifiers"]) + variants
-        keep_sources = {normalize_scenario_name(item["scenario"]) for item in others}
-    new_items, new_verifiers = merge_variants(base_items, base_verifiers, variants)
-
-    env_variants = build_env_variants(
-        [p for p in config.parts if p in ENV_PARTS],
-        scenario_sources(drafts, rows["envs"]),
-        ReplayContext(config.db_path, config.sample_path, config.work_dir),
-        complete,
-        run_llm,
-        num_per_part=config.num_per_part,
+    ctx = PartContext(
         seed=config.seed,
-        max_generations=config.max_generations,
+        num_per_part=config.num_per_part,
+        run_llm=llm_runner(llm_complete(config), config.max_generations),
+        replay=ReplayContext(config.db_path, config.sample_path, config.work_dir),
+        env_code={
+            normalize_scenario_name(r["scenario"]): r["full_code"]
+            for r in rows["envs"]
+            if r.get("full_code")
+        },
         workers=config.max_concurrency,
     )
+    by_scenario = drafts_by_scenario(drafts)
+    env_variants = [
+        env
+        for text in config.parts
+        for env in run_recipe(parse_recipe(text), by_scenario, ctx)
+    ]
 
-    def rebuilt(kind: str) -> list[dict]:
-        return [r for r in previous[kind] if is_rebuilt_env_row(r)]
-
+    # scenarios outside the selection keep the environments an earlier run made for them
+    previous = {
+        kind: [r for r in load_previous(path) if is_augmented_env_row(r)]
+        if config.allowed_scenarios
+        else []
+        for kind, path in outputs.items()
+    }
+    keep_sources = {
+        source
+        for r in previous["tasks"]
+        if (source := normalize_scenario_name(r["source_scenario"]))
+        not in (config.allowed_scenarios or [])
+    }
     new_rows, env_verifiers = merge_env_variants(
-        {
-            **{kind: rs + rebuilt(kind) for kind, rs in rows.items()},
-            "tasks": new_items + rebuilt("tasks"),
-        },
-        rebuilt("verifiers"),
+        {kind: rs + previous[kind] for kind, rs in rows.items()},
+        previous["verifiers"],
         env_variants,
         keep_sources,
     )
 
-    new_rows["verifiers"] = new_verifiers + env_verifiers
+    new_rows["verifiers"] = base_verifiers + env_verifiers
     for kind, path in outputs.items():
         tools_jsonl_save(new_rows[kind], path)
         logger.info(f"Saved {len(new_rows[kind])} rows to {path}")
 
     counts: dict[str, int] = {}
-    for variant in variants + [v for e in env_variants for v in e.variants]:
-        key = variant.meta.augmentations[0]
-        counts[key] = counts.get(key, 0) + 1
+    for env in env_variants:
+        counts[env.augmentation] = counts.get(env.augmentation, 0) + len(env.variants)
     logger.info(
-        f"Added {sum(counts.values())} augmented tasks ({len(env_variants)} rebuilt environments): {counts}"
+        f"Added {sum(counts.values())} augmented tasks in {len(env_variants)} environments: {counts}"
     )

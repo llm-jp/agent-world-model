@@ -496,7 +496,7 @@ async def run_agent(config: Config):
     # Resolve scenario/task
     scenario = config.scenario
     task_id = config.task_id
-    # settings of an augmented task (tool view, scripted follow-up turns)
+    # settings of an augmented task (hidden tools, scripted follow-up turns)
     task_meta: TaskMeta | None = None
 
     if config.task:
@@ -587,7 +587,7 @@ async def run_agent(config: Config):
         tools = await mcp.list_tools()
         logger.info(f"Loaded {len(tools)} tools from MCP server")
         tools_json_save(tools, os.path.join(output_dir, "tools.json"))
-        presented = PresentedTools(tools, task_meta.tool_view if task_meta else None)
+        presented = PresentedTools(tools, task_meta.hidden_tools if task_meta else ())
         tools_response_text = format_tools_for_response(presented.tools)
 
         pending_turns = list(task_meta.turns) if task_meta else []
@@ -648,8 +648,8 @@ async def run_agent(config: Config):
                     turn_dbs.append(turn_db)
                 next_turn = pending_turns.pop(0)
                 turn += 1
-                if next_turn.tool_view is not None:
-                    presented = PresentedTools(tools, next_turn.tool_view)
+                if next_turn.shown_tools:
+                    presented.show(next_turn.shown_tools)
                     tools_response_text = format_tools_for_response(presented.tools)
                 logger.info(f"Turn {turn} user message: {next_turn.user}")
                 messages.append({"role": "user", "content": next_turn.user})
@@ -698,15 +698,11 @@ async def run_agent(config: Config):
                     f"Executing: call_tool({tool_name}, {json.dumps(tool_args, ensure_ascii=False)[:200]})"
                 )
                 try:
-                    server_name, server_args = presented.resolve(tool_name, tool_args)
+                    presented.check(tool_name)
                     tool_call_log.append(
-                        {
-                            "turn": turn,
-                            "tool_name": server_name,
-                            "arguments": server_args,
-                        }
+                        {"turn": turn, "tool_name": tool_name, "arguments": tool_args}
                     )
-                    response_text = await mcp.call_tool(server_name, server_args)
+                    response_text = await mcp.call_tool(tool_name, tool_args)
                 except ToolCallRejected as e:
                     tool_call_log.append(
                         {

@@ -6,23 +6,29 @@ import random
 from awm.core.augment.draft import (
     Draft,
     LLMStep,
-    Part,
     Rejection,
     param_values_in_task,
     rewritten_task,
 )
+from awm.core.augment.part import TaskPart
 from awm.core.augment.task_parts import rewrite_step
 from awm.prompts import AUG_MISS_FUNC_FOLLOWUP, AUG_MISS_PARAM_PROMPT
 
+# Part.writes entries of the parts that script a follow-up turn, and of the
+# part that hides a tool until then
+FOLLOWUP = "followup"
+HIDDEN_TOOL = "hidden_tool"
 
-class MissFunc(Part):
+
+class MissFunc(TaskPart):
     """Hide the tool that completes the task until the follow-up turn."""
 
     name = "miss_func"
+    writes = frozenset({FOLLOWUP, HIDDEN_TOOL})
     needs_reference = True
     needs_tools = True
 
-    def apply(self, draft: Draft, rng: random.Random) -> Draft | None:
+    def apply_one(self, draft: Draft, rng: random.Random) -> Draft | None:
         called = [
             c["tool_name"]
             for c in draft.reference_calls or []
@@ -40,13 +46,14 @@ class MissFunc(Part):
         )
 
 
-class MissParam(Part):
+class MissParam(TaskPart):
     """Remove a value the task needs; the user gives it in the follow-up turn."""
 
     name = "miss_param"
+    writes = frozenset({FOLLOWUP})
     needs_reference = True
 
-    def apply(self, draft: Draft, rng: random.Random) -> LLMStep[Draft] | None:
+    def apply_one(self, draft: Draft, rng: random.Random) -> LLMStep[Draft] | None:
         triples = param_values_in_task(draft.task, draft.reference_calls or [])
         if not triples:
             return None
@@ -71,4 +78,4 @@ class MissParam(Part):
         prompt = AUG_MISS_PARAM_PROMPT.format(
             task=draft.task, value=value, param=param, tool_name=tool_name
         )
-        return rewrite_step(draft, prompt, finish)
+        return rewrite_step(rewritten, prompt, finish)

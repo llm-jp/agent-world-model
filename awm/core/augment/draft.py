@@ -1,16 +1,15 @@
-"""The task being augmented, the interface of a part, and turning a draft into data.
+"""The task being augmented, LLM requests, and turning a draft into data.
 
-A part reads the draft of a source task and returns the augmented draft (or an
-LLMStep that produces it). Every augmented task comes from exactly one part.
-Parts that rename tools or parameters build a new environment instead
-(env_parts.py).
+A draft holds everything an augmented task needs: its text, how the tools are
+presented, the follow-up turn and, after a part that rebuilds the environment,
+the rewritten server code. The parts of a recipe (part.py) pass drafts along,
+each one changing what it is about.
 """
 
 import dataclasses
-import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any
 
 from awm.core.tool_view import TaskMeta, ToolView, Turn
 from awm.core.verify import find_verifier_function_name
@@ -35,9 +34,13 @@ class Draft:
     # tools of the other scenarios, a pool for distractors
     other_tools: list[dict] = field(default_factory=list)
 
-    # the part that produced this draft; empty for a source task
-    part: str = ""
-    # how the tools are presented in every turn
+    # parts applied so far, in order; empty for a source task
+    parts: tuple[str, ...] = ()
+    # server code of a rebuilt environment; None keeps the source scenario's
+    code: str | None = None
+    # whether each reference call fails on the draft's server; None until replayed
+    call_errors: tuple[bool, ...] | None = None
+    # how the tools are presented in every turn; served by the environment's server
     view: ToolView = field(default_factory=ToolView)
     # tool hidden until the follow-up turn
     hidden_tool: str | None = None
@@ -51,14 +54,21 @@ class Draft:
     required_mentions: list[str] = field(default_factory=list)
     # tool names a rewrite must not mention
     banned_mentions: list[str] = field(default_factory=list)
+    # argument value -> its notation in the task, for values written another way
+    value_rewrites: dict[str, str] = field(default_factory=dict)
 
     def evolve(self, part: str, **changes: Any) -> "Draft":
         """A copy with the changes, produced by the part."""
-        return dataclasses.replace(self, part=part, **changes)
+        return dataclasses.replace(self, parts=(*self.parts, part), **changes)
 
     @property
     def tool_names(self) -> list[str]:
         return [t["name"] for t in self.tools or []]
+
+    @property
+    def has_view(self) -> bool:
+        """Whether the tools are presented otherwise than the server lists them."""
+        return self.view != ToolView()
 
 
 @dataclass(frozen=True)
@@ -80,22 +90,6 @@ class LLMStep[T]:
     check_prompt: Callable[[T], str] | None = None
     # user message asking for another reply; formatted with {problems}
     feedback_prompt: str = AUG_TOOL_FEEDBACK_PROMPT
-
-
-class Part:
-    """One augmentation; subclasses set the class attributes and implement apply."""
-
-    name: ClassVar[str]
-    needs_reference: ClassVar[bool] = False
-    needs_tools: ClassVar[bool] = False
-
-    def applicable(self, draft: Draft) -> bool:
-        if self.needs_reference and not draft.reference_calls:
-            return False
-        return not (self.needs_tools and not draft.tools)
-
-    def apply(self, draft: Draft, rng: random.Random) -> Draft | LLMStep[Draft] | None:
-        raise NotImplementedError
 
 
 # ---------------------------------------------------------------- helpers
@@ -168,24 +162,50 @@ def keep_values(draft: Draft) -> list[str]:
     ]
 
 
-def rewritten_task(draft: Draft, response: dict) -> str | Rejection:
-    """The rewritten task in the reply, if it keeps what the draft requires."""
+def must_keep(draft: Draft, values: list[str] | None = None) -> list[str]:
+    """Texts a rewrite of the draft's task must keep verbatim.
+
+    values: the argument values to keep; defaults to keep_values(draft). The
+    texts the earlier parts of a recipe require are added.
+    """
+    if values is None:
+        values = keep_values(draft)
+    texts = [*values, *draft.required_mentions, *draft.value_rewrites.values()]
+    return list(dict.fromkeys(texts))
+
+
+def constraint_problems(
+    draft: Draft, task: str, values: list[str] | None = None
+) -> list[str]:
+    """How a rewrite of the draft's task breaks what the draft requires.
+
+    values: the argument values to keep; defaults to keep_values(draft).
+    """
+    problems = []
+    if missing := [v for v in must_keep(draft, values) if v not in task]:
+        problems.append(f"These texts must appear verbatim but are missing: {missing}")
+    if draft.removed_value is not None and draft.removed_value in task:
+        problems.append(f'The value "{draft.removed_value}" must not appear.')
+    if banned := mentioned_tool_names(task, draft.banned_mentions):
+        problems.append(f"These tool names must not be mentioned in any form: {banned}")
+    return problems
+
+
+def rewritten_task(
+    draft: Draft, response: dict, values: list[str] | None = None
+) -> str | Rejection:
+    """The rewritten task in the reply, if it keeps what the draft requires.
+
+    values: the argument values to keep; defaults to keep_values(draft).
+    """
     task = response.get("task")
     if not isinstance(task, str) or not task.strip():
         return Rejection('"task" must be a non-empty string.')
     task = task.strip()
     if task == draft.task:
         return Rejection("The rewritten request is identical to the original.")
-    if missing := [
-        v for v in keep_values(draft) + draft.required_mentions if v not in task
-    ]:
-        return Rejection(f"These texts must appear verbatim but are missing: {missing}")
-    if draft.removed_value is not None and draft.removed_value in task:
-        return Rejection(f'The value "{draft.removed_value}" must not appear.')
-    if banned := mentioned_tool_names(task, draft.banned_mentions):
-        return Rejection(
-            f"These tool names must not be mentioned in any form: {banned}"
-        )
+    if problems := constraint_problems(draft, task, values):
+        return Rejection("; ".join(problems))
     return task
 
 
@@ -273,38 +293,31 @@ def build_followup_verifier(
 class Variant:
     """An augmented task ready to be appended to the dataset."""
 
-    scenario: str
     task: str
     meta: TaskMeta
     verifier_code: str
 
 
 def finalize(draft: Draft) -> Variant:
-    """Assemble the task meta and verifier of the part's draft."""
-    view = None if draft.view == ToolView() else draft.view
-    restored = None
-    if draft.hidden_tool is not None:
-        view = ToolView(hide_tools=[draft.hidden_tool])
-        # the follow-up turn shows every tool again
-        restored = ToolView()
+    """Assemble the task meta and verifier of the recipe's last draft.
 
+    draft.view is served by the environment's server (run_recipe), so the meta
+    keeps only the tool hidden until the follow-up turn.
+    """
+    hidden = [draft.hidden_tool] if draft.hidden_tool is not None else []
     turns = []
     verifier_code = draft.source_verifier_code
     if draft.followup is not None:
-        turns.append(Turn(user=draft.followup, tool_view=restored))
+        turns.append(Turn(user=draft.followup, shown_tools=hidden))
         verifier_code = build_followup_verifier(
             draft.source_verifier_code, draft.forbidden_calls
         )
 
     meta = TaskMeta(
-        augmentations=[draft.part],
+        augmentations=list(draft.parts),
         source_task_idx=draft.source_task_idx,
-        tool_view=view,
+        source_scenario=draft.scenario,
+        hidden_tools=hidden,
         turns=turns,
     )
-    return Variant(
-        scenario=draft.scenario,
-        task=draft.task,
-        meta=meta,
-        verifier_code=verifier_code,
-    )
+    return Variant(task=draft.task, meta=meta, verifier_code=verifier_code)

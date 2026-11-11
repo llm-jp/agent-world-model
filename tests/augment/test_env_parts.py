@@ -1,31 +1,31 @@
 import json
 import random
+from pathlib import Path
 
 import pytest
-from helpers import SOURCE_VERIFIER, TASK, make_draft
+from helpers import SOURCE_VERIFIER, TASK, make_ctx, make_draft, scripted_llm
 
-from awm.core.augment.draft import Draft, LLMStep, Rejection, Variant
+from awm.core.augment.draft import Draft, LLMStep, Rejection
 from awm.core.augment.env_parts import (
-    CheckTask,
-    EnvVariant,
+    MAX_RANDOM_NAME_LENGTH,
+    MIN_RANDOM_NAME_LENGTH,
+    ParamRename,
     RebuiltEnv,
     Renames,
-    ReplayContext,
     ScenarioSource,
     ToolRename,
     ToolRenameRandom,
     apply_edits,
+    called_params,
     code_step,
-    env_scenario,
     listing_problems,
-    merge_env_variants,
     rename_operation_ids,
     rename_problems,
-    replay,
     task_step,
+    unrelated_change_problems,
 )
 from awm.core.augment.refine import refine
-from awm.core.tool_view import TaskMeta
+from awm.core.augment.replay import ReplayContext, replay, replayed_drafts
 
 # a server like the generated ones: one route per tool, the database via create_engine
 SERVER = """
@@ -98,10 +98,11 @@ def make_source(**changes) -> ScenarioSource:
         tools=SERVER_TOOLS,
         reference_calls=SERVER_CALLS,
         source_verifier_code=SOURCE_VERIFIER,
+        call_errors=(False, True, False),
     )
     fields = {
         "scenario": "Shop",
-        "env_row": {"scenario": "Shop", "full_code": SERVER},
+        "code": SERVER,
         "tools": SERVER_TOOLS,
         "drafts": [draft],
         **changes,
@@ -163,7 +164,69 @@ def test_tool_rename_random_is_distinct_letters_and_deterministic():
     assert first == again
     names = list(first.tools.values())
     assert len(set(names)) == 2
-    assert all(n.isalpha() and n.islower() and len(n) == 8 for n in names)
+    assert all(n.isalpha() and n.islower() for n in names)
+    assert all(
+        MIN_RANDOM_NAME_LENGTH <= len(n) <= MAX_RANDOM_NAME_LENGTH for n in names
+    )
+
+
+def test_tool_rename_random_varies_the_length():
+    tools = [{"name": f"tool_{i}", "inputSchema": {}} for i in range(40)]
+    renames = ToolRenameRandom().renames(make_source(tools=tools), random.Random(0))
+    assert len({len(n) for n in renames.tools.values()}) > 1
+
+
+def test_tool_rename_random_avoids_words_of_the_code(monkeypatch):
+    # the first draw is a word of the server code, so it is drawn again
+    draws = iter([list("text"), list("zzzzq")])
+    monkeypatch.setattr(random.Random, "choices", lambda self, *a, **k: next(draws))
+    tools = [{"name": "only_tool", "inputSchema": {}}]
+    renames = ToolRenameRandom().renames(make_source(tools=tools), random.Random(0))
+    assert renames.tools == {"only_tool": "zzzzq"}
+
+
+def test_called_params_are_the_parameters_the_reference_calls_pass():
+    assert called_params(make_source()) == {
+        "search_products": ["query"],
+        "create_order": ["product_id"],
+    }
+
+
+def test_param_rename_maps_each_name_once_for_every_tool():
+    step = ParamRename().renames(make_source(), random.Random(0))
+    assert isinstance(step, LLMStep)
+    assert '"product_id"' in step.messages[0]["content"]
+    out = step.finish({"params": {"query": "keywords", "product_id": "itemId"}})
+    assert out == Renames(
+        params={
+            "search_products": {"query": "keywords"},
+            "create_order": {"product_id": "itemId"},
+        }
+    )
+
+
+def test_param_rename_rejects_unusable_names():
+    tools = [
+        dict(
+            SERVER_TOOLS[0], inputSchema={"properties": {"product_id": {}, "note": {}}}
+        ),
+        SERVER_TOOLS[1],
+    ]
+    step = ParamRename().renames(make_source(tools=tools), random.Random(0))
+    assert isinstance(step, LLMStep)
+    for names in [
+        {"query": "keywords"},
+        {"query": "Query", "product_id": "itemId"},
+        {"query": "class", "product_id": "itemId"},
+        {"query": "itemId", "product_id": "itemId"},
+        {"query": "keywords", "product_id": "note"},
+    ]:
+        assert isinstance(step.finish({"params": names}), Rejection), names
+
+
+def test_param_rename_needs_a_parameter_the_reference_calls_pass():
+    source = make_source(drafts=[make_draft(tools=SERVER_TOOLS, reference_calls=[])])
+    assert ParamRename().renames(source, random.Random(0)) is None
 
 
 # ---------------------------------------------------------- code edits
@@ -182,6 +245,36 @@ def test_apply_edits_needs_each_old_text_exactly_once():
     assert isinstance(apply_edits("a b a", [{"old": "a", "new": "c"}]), Rejection)
     assert isinstance(apply_edits("a", [{"old": "x", "new": "y"}]), Rejection)
     assert isinstance(apply_edits("a", []), Rejection)
+
+
+def renamed_server(*extra_edits: dict) -> str:
+    code = apply_edits(
+        rename_operation_ids(SERVER, RENAMES), [*GOOD_EDITS, *extra_edits]
+    )
+    assert isinstance(code, str), code
+    return code
+
+
+def test_unrelated_change_problems_accepts_edits_of_names_only():
+    assert unrelated_change_problems(SERVER, renamed_server(), RENAMES) == []
+    # a name written with spaces may change, or stay, and so may function names
+    spaced = {"old": 'summary="Search products."', "new": 'summary="findItems."'}
+    function = {"old": "def search_products(", "new": "def find_items("}
+    assert (
+        unrelated_change_problems(SERVER, renamed_server(spaced, function), RENAMES)
+        == []
+    )
+
+
+def test_unrelated_change_problems_reports_reworded_text():
+    reworded = {"old": 'description="Product."', "new": 'description="Item."'}
+    problems = unrelated_change_problems(SERVER, renamed_server(reworded), RENAMES)
+    assert len(problems) == 1
+    assert "Product." in problems[0] and "Item." in problems[0]
+    line = SERVER.splitlines().index(
+        next(x for x in SERVER.splitlines() if 'description="Product."' in x)
+    )
+    assert f"line {line + 1}:" in problems[0]
 
 
 def test_listing_problems_compare_with_the_renamed_tools():
@@ -212,14 +305,12 @@ def test_replay_grades_the_database_and_reports_failed_calls(ctx):
     assert result.reward == "complete"
     assert [e is not None for e in result.errors] == [False, True, False]
     assert {t["name"] for t in result.tools} == {"create_order", "search_products"}
-
-
-def check_task() -> CheckTask:
-    return CheckTask(make_source().drafts[0], [False, True, False])
+    # the server's code and databases are removed after the replay
+    assert list(Path(ctx.work_dir).iterdir()) == []
 
 
 def test_code_step_accepts_a_server_that_behaves_the_same(ctx):
-    step = code_step(ctx, make_source(), "tool_rename", RENAMES, [check_task()])
+    step = code_step(ctx, make_source(), "tool_rename", RENAMES)
     rebuilt = step.finish({"edits": GOOD_EDITS})
     assert not isinstance(rebuilt, Rejection), rebuilt
     assert {t["name"] for t in rebuilt.tools} == {"placeOrder", "findItems"}
@@ -231,23 +322,55 @@ def test_code_step_accepts_a_server_that_behaves_the_same(ctx):
 
 
 def test_code_step_rejects_stale_names_and_changed_parameters(ctx):
-    step = code_step(ctx, make_source(), "tool_rename", RENAMES, [check_task()])
+    step = code_step(ctx, make_source(), "tool_rename", RENAMES)
     stale = step.finish({"edits": GOOD_EDITS[1:]})
     assert isinstance(stale, Rejection) and "search_products" in stale.reason
     not_aliased = step.finish({"edits": [GOOD_EDITS[0], GOOD_EDITS[2]]})
     assert isinstance(not_aliased, Rejection) and "productId" in not_aliased.reason
 
 
+def test_code_step_renames_parameters_only(ctx):
+    renames = Renames(params={"create_order": {"product_id": "productId"}})
+    step = code_step(ctx, make_source(), "param_rename", renames)
+    edits = [
+        GOOD_EDITS[1],
+        {
+            "old": '"create_order needs a positive product_id"',
+            "new": '"create_order needs a positive productId"',
+        },
+    ]
+    rebuilt = step.finish({"edits": edits})
+    assert not isinstance(rebuilt, Rejection), rebuilt
+    tool = next(t for t in rebuilt.tools if t["name"] == "create_order")
+    assert set(tool["inputSchema"]["properties"]) == {"productId"}
+
+
+def test_unrelated_change_problems_drops_an_alias_given_alone():
+    renames = Renames(params={"t": {"q": "words"}})
+    before = "def t(q: str = Query()):\n    return q\n"
+    after = 'def t(q: str = Query(alias="words")):\n    return q\n'
+    assert unrelated_change_problems(before, after, renames) == []
+
+
+def test_code_step_rejects_text_reworded_beyond_the_names(ctx):
+    step = code_step(ctx, make_source(), "tool_rename", RENAMES)
+    reworded = [*GOOD_EDITS, {"old": "Search products.", "new": "Look up items."}]
+    rejection = step.finish({"edits": reworded})
+    assert isinstance(rejection, Rejection)
+    assert "not renames" in rejection.reason and "Look up items." in rejection.reason
+
+
 def test_code_step_reports_a_server_that_does_not_start(ctx):
-    step = code_step(ctx, make_source(), "tool_rename", RENAMES, [check_task()])
-    broken = [*GOOD_EDITS, {"old": "app = FastAPI(", "new": "app = missing_name("}]
-    rejection = step.finish({"edits": broken})
+    broken = SERVER.replace("app = FastAPI(", "app = missing_name(")
+    source = make_source(code=broken)
+    step = code_step(ctx, source, "tool_rename", RENAMES)
+    rejection = step.finish({"edits": GOOD_EDITS})
     assert isinstance(rejection, Rejection)
     assert "does not start" in rejection.reason and "missing_name" in rejection.reason
 
 
 def test_refine_feeds_server_problems_back(ctx):
-    step = code_step(ctx, make_source(), "tool_rename", RENAMES, [check_task()])
+    step = code_step(ctx, make_source(), "tool_rename", RENAMES)
     replies = iter(
         [
             json.dumps({"edits": GOOD_EDITS[1:]}),
@@ -271,14 +394,15 @@ def test_refine_feeds_server_problems_back(ctx):
 
 def rebuilt_env(task: str) -> RebuiltEnv:
     source = make_source(drafts=[make_draft(task=task, reference_calls=SERVER_CALLS)])
-    return RebuiltEnv(source, "tool_rename", RENAMES, SERVER, [], [check_task()])
+    return RebuiltEnv(source, "tool_rename", RENAMES, SERVER, [])
 
 
 def test_task_without_old_names_is_kept_as_is():
     rebuilt = rebuilt_env(TASK)
-    draft = task_step(rebuilt, CheckTask(rebuilt.source.drafts[0], [False] * 3))
+    draft = task_step(rebuilt, rebuilt.source.drafts[0])
     assert isinstance(draft, Draft)
-    assert draft.scenario == env_scenario("Shop", "tool_rename") == "Shop__tool_rename"
+    assert draft.scenario == "Shop" and draft.parts == ("tool_rename",)
+    assert draft.code == SERVER and draft.task == TASK
     assert draft.reference_calls is not None
     assert draft.reference_calls[2]["tool_name"] == "placeOrder"
 
@@ -286,62 +410,41 @@ def test_task_without_old_names_is_kept_as_is():
 def test_task_naming_an_old_tool_is_rewritten_and_checked():
     task = "Use create_order to order product 42"
     rebuilt = rebuilt_env(task)
-    step = task_step(rebuilt, CheckTask(rebuilt.source.drafts[0], [False] * 3))
+    step = task_step(rebuilt, rebuilt.source.drafts[0])
     assert isinstance(step, LLMStep) and step.check_prompt is not None
     stale = step.finish({"task": "Use create order to order product 42"})
     assert isinstance(stale, Rejection)
     out = step.finish({"task": "Use placeOrder to order product 42"})
     assert isinstance(out, Draft) and out.task == "Use placeOrder to order product 42"
     assert "placeOrder" in step.check_prompt(out)
+    assert out.banned_mentions == ["create_order"]
+    assert out.required_mentions == ["placeOrder"]
 
 
-# ------------------------------------------------------ dataset assembly
+# ------------------------------------------------- drafts that check a rebuild
 
 
-def env_variant(task: str) -> EnvVariant:
-    meta = TaskMeta(
-        augmentations=["tool_rename"], source_task_idx=3, source_scenario="Shop"
-    )
-    variant = Variant("Shop__tool_rename", task, meta, "code")
-    return EnvVariant("Shop__tool_rename", "Shop", "tool_rename", "new code", [variant])
-
-
-def scenario_rows() -> dict[str, list[dict]]:
-    return {
-        "envs": [{"scenario": "Shop", "full_code": "old code", "api_spec": {}}],
-        "db": [{"scenario": "Shop", "db_schema": {}}],
-        "sample": [{"scenario": "Shop", "sample_data": {}}],
-        "tasks": [{"scenario": "Shop", "tasks": ["t0"]}],
-    }
-
-
-def test_merge_adds_the_environment_to_every_scenario_file():
-    rows, verifiers = merge_env_variants(scenario_rows(), [], [env_variant("a")], set())
-    env = rows["envs"][-1]
-    assert env["scenario"] == "Shop__tool_rename" and env["full_code"] == "new code"
-    assert env["api_spec"] == {} and env["source_scenario"] == "Shop"
-    assert rows["db"][-1]["db_schema"] == {} and rows["sample"][-1]["sample_data"] == {}
-    tasks = rows["tasks"][-1]
-    assert tasks["tasks"] == ["a"]
-    assert tasks["task_meta"][0]["source_scenario"] == "Shop"
-    assert verifiers == [
-        {
-            "scenario": "Shop__tool_rename",
-            "task_idx": 0,
-            "task": "a",
-            "verification": {"code": "code"},
-            "augmented": True,
-            "augmentations": ["tool_rename"],
-            "source_task_idx": 3,
-            "source_scenario": "Shop",
-        }
+def test_replayed_drafts_keep_every_solved_draft_from_known_replays(tmp_path):
+    ctx = ReplayContext("gen_db.jsonl", "gen_sample.jsonl", str(tmp_path))
+    ctx.source_replays[("shop", 1)] = None
+    ctx.source_replays[("shop", 2)] = (False, True)
+    ctx.source_replays[("shop", 3)] = (False,)
+    rebuilt = make_draft(source_task_idx=0, code="rebuilt", call_errors=(False,))
+    unsolved = make_draft(source_task_idx=1)
+    solved = make_draft(source_task_idx=2)
+    later = make_draft(source_task_idx=3)
+    kept = replayed_drafts(ctx, SERVER, [rebuilt, unsolved, solved, later])
+    assert [(d.source_task_idx, d.call_errors) for d in kept] == [
+        (0, (False,)),
+        (2, (False, True)),
+        (3, (False,)),
     ]
+    assert replayed_drafts(ctx, SERVER, [unsolved]) == []
+    assert list(tmp_path.iterdir()) == []
 
 
-def test_merge_replaces_earlier_environments_unless_kept():
-    once = merge_env_variants(scenario_rows(), [], [env_variant("a")], set())
-    again = merge_env_variants(once[0], once[1], [env_variant("b")], set())
-    assert [r["tasks"] for r in again[0]["tasks"]] == [["t0"], ["b"]]
-    assert len(again[0]["envs"]) == 2 and len(again[1]) == 1
-    kept = merge_env_variants(once[0], once[1], [], {"shop"})
-    assert kept == once
+def test_env_part_skips_scenarios_without_server_code():
+    ctx = make_ctx(scripted_llm(lambda step: []))
+    drafts = [make_draft(tools=SERVER_TOOLS, reference_calls=SERVER_CALLS)]
+    assert ToolRenameRandom().apply(drafts, ctx) == []
+    assert ToolRenameRandom().apply([make_draft(reference_calls=None)], ctx) == []

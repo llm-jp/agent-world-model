@@ -271,21 +271,25 @@ awm verify --input outputs/agents/<timestamp> --mode sql
 ```
 
 ### Task Augmentation
-`awm gen aug` leaves its input files as they are and writes the dataset with augmented tasks to a directory of its own (`--output_dir`, default `<input dir>_aug`, e.g. `outputs/<model>_ja` -> `outputs/<model>_ja_aug`), under the input file names: `gen_tasks.jsonl`, `gen_verifier.pure_code.jsonl`, `gen_envs.jsonl`, `gen_db.jsonl` and `gen_sample.jsonl`. Together they are a whole dataset: augmented tasks follow the original ones in each scenario's `tasks`, with their settings in a parallel `task_meta` list (`null` for original tasks), and their code-mode verifiers follow the original ones under the same `(scenario, task_idx)`. Readers that only use `tasks` keep working; `awm agent` and `awm verify` apply `task_meta`.
+`awm gen aug` leaves its input files as they are and writes the dataset with augmented tasks to a directory of its own (`--output_dir`, default `<input dir>_aug`, e.g. `outputs/<model>_ja` -> `outputs/<model>_ja_aug`), under the input file names: `gen_tasks.jsonl`, `gen_verifier.pure_code.jsonl`, `gen_envs.jsonl`, `gen_db.jsonl`, `gen_sample.jsonl` and `gen_scenario.jsonl`. Together they are a whole dataset. Each augmented task forms an environment of its own, `<scenario>__<recipe>__<source task index>` (e.g. `Shop__add_params__3`, `Shop__tool_rename+miss_param__0`), so that tasks augmented in different ways never share a server: the scenario files (`gen_scenario.jsonl` included) copy the source scenario's rows, with server code that is rewritten by the renaming parts and serves the task's tool view (extra parameters, distractor tools, reworded descriptions, enums, value formats), so any MCP client such as an RL trainer sees the augmented tools. The new scenario has its own database file, its task (`task_idx` 0) carries the follow-up settings in `task_meta`, and its code-mode verifier is added. The source scenarios are written unchanged. `awm agent` and `awm verify` apply `task_meta`.
 
-Each augmentation is a part (`awm/core/augment/`, details in `awm/core/augment/README.md`), applied on its own to a source task. `--parts` selects which parts to run (default: every part).
+Each augmentation is a recipe: one part, or parts joined by `+` that are applied one after another to a source task, each to what the previous one made (`awm/core/augment/`, details in `awm/core/augment/README.md`). `--parts` takes comma-separated recipes (default: every part on its own), e.g. `"tool_rename+task_ambiguous+miss_param,add_params"`. A recipe is refused before the run if the parts that rebuild the environment (`tool_rename`, `tool_rename_random`, `param_rename`) do not come first, if a part appears twice, or if two parts set the same thing (e.g. `miss_func` and `miss_param` both script the follow-up turn).
 
 | Part | What changes | Reward |
 |------|--------------|--------|
 | `tool_rename` | a rebuilt environment whose tools have new names the LLM picks | original verifier |
-| `tool_rename_random` | a rebuilt environment whose tools have random 8-letter names, so only the descriptions tell them apart | original verifier |
-| `add_params`, `distractor_tools` | how the tools are presented to the agent (calls are mapped back to the server) | original verifier |
+| `tool_rename_random` | a rebuilt environment whose tools have random lowercase names of 4 to 14 letters, so only the descriptions tell them apart | original verifier |
+| `param_rename` | a rebuilt environment whose parameters (those the solved tasks pass) have new names the LLM picks | original verifier |
+| `add_params`, `distractor_tools` | how the server presents the tools: unused optional parameters, or tools of other scenarios whose calls fail | original verifier |
 | `tool_doc_paraphrase` | tool and parameter descriptions, rewritten by the LLM | original verifier |
-| `task_paraphrase`, `task_ambiguous`, `task_no_tool_names`, `task_distractor_names` | task wording, rewritten by the LLM | original verifier |
+| `param_enum` | string parameters that take a few fixed values, chosen by the LLM, get an enum of those values | original verifier |
+| `param_format` | up to two passed parameters are presented in another value format (dates as YYYYMMDD or YYYY/MM/DD, booleans as "yes"/"no", integers as digit strings), and calls are converted back | original verifier |
+| `task_ambiguous`, `task_no_tool_names`, `task_distractor_names` | task wording, rewritten by the LLM | original verifier |
+| `task_value_format` | values in the task written in another notation (e.g. a date or an amount), which the agent must convert | original verifier |
 | `miss_func` | the tool that completes the task is hidden until a scripted follow-up turn | no database change and no call of the hidden tool in the first turn, then the original verifier |
 | `miss_param` | a value the task needs is removed and given in a scripted follow-up turn | no database change and no call passing that parameter in the first turn, then the original verifier |
 
-The renaming parts do not change how the tools are presented; they rebuild the environment. The LLM edits the server code so that the operation ids, descriptions and error messages use the new tool names. A rebuild is accepted when the server lists exactly the renamed tools with their original parameters, keeps no old tool name, and still solves source tasks by replaying their reference calls under the new names. It is added as a scenario of its own (`<scenario>__<part>`) to every file in the output directory, with the original database and verifiers; source tasks that name a renamed tool are rewritten for the new names.
+The renaming parts do not change how the tools are presented; they rebuild the environment. The LLM edits the server code so that the operation ids, parameters, descriptions and error messages use the new names. A rebuild is accepted when the server lists exactly the renamed tools with the renamed parameters, changes nothing but the names, keeps no old tool name, and still solves source tasks by replaying their reference calls under the new names. Like the other parts, each of its tasks is added as a scenario of its own (`<scenario>__<recipe>__<source task index>`) with the original database and verifiers; source tasks that name a renamed tool are rewritten for the new names.
 
 A reply from the LLM that breaks a part's rules (e.g. a value the task needs is lost, or a rebuilt server fails its checks) goes back to the LLM with the problem as feedback. A reply that follows the rules is also self-checked where it rewrites a task or a server: the LLM checks whether the user messages are consistent with the reference tool calls, or whether the server code changes only the names, and any problems it finds also go back as feedback. A rewrite with no accepted reply after `--max_generations` (default 3) attempts is dropped.
 
@@ -307,14 +311,14 @@ awm gen aug \
     --db_path outputs/gen_db.jsonl \
     --sample_path outputs/gen_sample.jsonl \
     --output_dir outputs_aug \
-    --parts "tool_rename_random,task_paraphrase,tool_rename,miss_param" \
+    --parts "tool_rename_random,task_ambiguous,tool_rename+miss_param" \
     --num_per_part 2
 
 # on Slurm, both stages with a vLLM server, written to outputs/<dir>_aug/; -n 20 is a sample run written to outputs/<dir>_aug_debug/
 sbatch scripts/run_gen_aug.sh -o outputs/<dir> -p "tool_rename_random,tool_rename,add_params" -n 20
 ```
 
-Rerunning a generation stage does not touch the output directory, so rerun `awm gen aug` afterwards to bring them up to date. With `--allowed_scenarios`, the other scenarios keep what the output directory already has for them; augmented tasks written by an older version of `awm gen aug` (e.g. a `task_meta` with `rename_tools`) cannot be read any more and are dropped. If the input files themselves hold augmented data, `awm gen aug` skips it, and the generation stages read only the original tasks of the original scenarios and keep the rows of rebuilt environments when they rewrite their files.
+Rerunning a generation stage does not touch the output directory, so rerun `awm gen aug` afterwards to bring them up to date. With `--allowed_scenarios`, the environments made from the other scenarios are kept from the output directory. If the input files themselves hold augmented data, `awm gen aug` skips it, and the generation stages read only the original tasks of the original scenarios and keep the rows of augmented environments when they rewrite their files.
 
 ### Evaluating a Model on the Environments
 `scripts/run_gen_traj.sh` lets a model solve every task of a dataset, the tasks of augmented environments included, at temperature 0 by default. Each run keeps its trajectory at `<output_dir>/reference_runs/<scenario>/task_<i>/trajectory.json` and its code-mode verdict in `<output_dir>/gen_reference.jsonl`. At the end, `awm report` summarizes the verdicts into `<output_dir>/report.json` and the job log: the share of tasks solved overall, per augmentation part (`original` for the source tasks) and per source scenario, and, per part, the share of augmented tasks solved among those whose source task was solved.

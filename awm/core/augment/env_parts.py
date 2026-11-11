@@ -2,9 +2,10 @@
 
 The renamed tools are real: the server code is rewritten with the new names
 (operation ids, parameters, descriptions, error messages), so nothing the agent
-sees still uses an old name. The rebuilt environment becomes a scenario of its
-own (<scenario>__<part>) with the original database schema, sample data and
-verifiers, and with source tasks rewritten for the new names.
+sees still uses an old name. The drafts of a scenario carry the rewritten code,
+the tools it lists and their reference calls under the new names, and tasks
+that name a renamed tool are rewritten. The recipe's environment keeps the
+source's database schema, sample data and verifiers.
 
 A rewrite of the server code is accepted only if the server starts, lists
 exactly the renamed tools and parameters, keeps no old tool name in what it
@@ -14,59 +15,57 @@ leave a database the task's verifier grades complete.
 """
 
 import ast
-import asyncio
 import dataclasses
 import difflib
 import json
+import keyword
 import logging
-import os
 import random
 import re
 import string
-import uuid
-from collections.abc import Callable
+from abc import abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import ClassVar
 
-from awm.core.agent import MCPToolExecutor
 from awm.core.augment.draft import (
     Draft,
     LLMStep,
     Rejection,
-    Variant,
-    keep_values,
+    must_keep,
     properties,
 )
-from awm.core.augment.refine import Complete, refine
+from awm.core.augment.part import Part, PartContext
+from awm.core.augment.replay import (
+    ReplayContext,
+    replay,
+    replayed_drafts,
+    tool_set_problems,
+)
 from awm.core.augment.task_parts import (
-    accept_task,
     rewrite_step,
 )
-from awm.core.server import RunningServer, ServerStartError, serve_scenario
-from awm.core.tool_view import TaskMeta
-from awm.core.verify import run_verifier
+from awm.core.server import ServerStartError
 from awm.prompts import (
     AUG_ENV_RENAME_CHECK_PROMPT,
     AUG_ENV_RENAME_PROMPT,
+    AUG_PARAM_RENAME_PROMPT,
     AUG_TASK_RENAME_PROMPT,
     AUG_TOOL_RENAME_PROMPT,
 )
-from awm.tools import is_rebuilt_env_row, normalize_scenario_name, tools_jsonl_save
+from awm.tools import normalize_scenario_name
 
 logger = logging.getLogger(__name__)
 
-RANDOM_NAME_LENGTH = 8
+# length range of the names tool_rename_random draws, inclusive
+MIN_RANDOM_NAME_LENGTH = 4
+MAX_RANDOM_NAME_LENGTH = 14
 # names that function-calling APIs accept
 TOOL_NAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
-SERVER_START_TIMEOUT = 60.0
-CALL_TIMEOUT = 60.0
 # longest server output or error text sent back to the LLM
 MAX_FEEDBACK_CHARS = 1500
-# MCPToolExecutor.call_tool marks a failed call with this prefix
-TOOL_ERROR_PREFIX = "Error: "
-# environment scenarios are named <scenario><separator><part>
-SCENARIO_SEPARATOR = "__"
+# Part.writes entries of the renaming parts
+TOOL_NAMES = "tool_names"
+PARAM_NAMES = "param_names"
 
 
 def _word(name: str) -> str:
@@ -128,16 +127,16 @@ class Renames:
 
 @dataclass
 class ScenarioSource:
-    """A scenario to rebuild, with the solved tasks that will check the rebuild."""
+    """A scenario's environment to rebuild, as the drafts of the recipe have it.
+
+    drafts: solved tasks whose reference calls solve them on a replay of code
+    (Draft.call_errors set); they check the rebuild.
+    """
 
     scenario: str
-    env_row: dict
+    code: str
     tools: list[dict]
     drafts: list[Draft]
-
-    @property
-    def code(self) -> str:
-        return self.env_row["full_code"]
 
     @property
     def tool_names(self) -> list[str]:
@@ -147,51 +146,170 @@ class ScenarioSource:
 # ---------------------------------------------------------------- names
 
 
-def rename_problems(tool_names: list[str], renames: dict[str, str]) -> list[str]:
-    """What makes the new tool names unusable."""
+def name_map(
+    response: dict, key: str, expected: set[str], what: str
+) -> dict[str, str] | Rejection:
+    """The {old name: new name} map under key in the reply, the new names stripped.
+
+    what: the kind of the names ("tool", "parameter"), for the feedback.
+    """
+    names = response.get(key)
+    if not isinstance(names, dict) or set(names) != expected:
+        return Rejection(
+            f'"{key}" must map exactly these {what} names to new names: {sorted(expected)}'
+        )
+    if not all(isinstance(v, str) for v in names.values()):
+        return Rejection("Every new name must be a string.")
+    return {old: new.strip() for old, new in names.items()}
+
+
+def name_problems(renames: dict[str, str], what: str, keywords: bool) -> list[str]:
+    """What makes new names unusable in themselves.
+
+    what: the kind of the names ("tool", "parameter").
+    keywords: whether a Python keyword can be a name.
+    """
+    rule = "must start with a letter and use only letters, digits and _ (at most 64 characters)"
+    if not keywords:
+        rule = "must start with a letter, use only letters, digits and _ (at most 64 characters) and not be a Python keyword"
     problems = []
     for old, new in renames.items():
-        if not TOOL_NAME_PATTERN.fullmatch(new):
-            problems.append(
-                f"{new!r} must start with a letter and use only letters, digits and _ (at most 64 characters)"
-            )
+        if not TOOL_NAME_PATTERN.fullmatch(new) or (
+            not keywords and keyword.iskeyword(new)
+        ):
+            problems.append(f"{new!r} {rule}")
         if new.replace("_", "").lower() == old.replace("_", "").lower():
             problems.append(f"{new!r} only changes the case or separators of {old!r}")
-        if new in tool_names and new != old:
-            problems.append(f"{new!r} is already the name of another tool")
     if len(set(renames.values())) < len(renames):
-        problems.append("two tools got the same new name")
+        problems.append(f"two {what}s got the same new name")
     return problems
 
 
-class EnvPart:
-    """Renames of one kind; subclasses implement renames."""
+def rename_problems(tool_names: list[str], renames: dict[str, str]) -> list[str]:
+    """What makes the new tool names unusable."""
+    problems = name_problems(renames, "tool", keywords=True)
+    for old, new in renames.items():
+        if new in tool_names and new != old:
+            problems.append(f"{new!r} is already the name of another tool")
+    return problems
 
-    name: ClassVar[str]
 
+class EnvPart(Part):
+    """Renames of one kind, built into the server code; subclasses implement renames.
+
+    apply rebuilds each scenario once: it picks the renames, has the LLM edit
+    the server code until the rebuilt server passes the checks, and moves the
+    scenario's drafts onto the rebuilt server.
+    """
+
+    rebuilds_env = True
+    needs_reference = True
+    needs_tools = True
+
+    @abstractmethod
     def renames(
         self, source: ScenarioSource, rng: random.Random
     ) -> Renames | LLMStep[Renames] | None:
-        raise NotImplementedError
+        """The new names, a step that asks the LLM for them, or None if nothing to rename."""
+
+    def apply(self, drafts: list[Draft], ctx: PartContext) -> list[Draft]:
+        sources = scenario_sources(self, drafts, ctx)
+        if not sources:
+            return []
+
+        renames: dict[str, Renames] = {}
+        name_steps: list[LLMStep[tuple[str, Renames]]] = []
+        for source in sources:
+            rng = ctx.rng(self.name, normalize_scenario_name(source.scenario))
+            out = self.renames(source, rng)
+            if isinstance(out, LLMStep):
+                name_steps.append(_tagged(out, source.scenario))
+            elif out is not None:
+                renames[source.scenario] = out
+        renames.update(dict(ctx.run_llm(name_steps)))
+
+        steps = [
+            code_step(ctx.replay, s, self.name, renames[s.scenario])
+            for s in sources
+            if s.scenario in renames
+        ]
+        rebuilt_envs = ctx.run_llm(steps, workers=ctx.workers)
+        logger.info(
+            f"Part {self.name}: {len(rebuilt_envs)} environments rebuilt from {len(steps)} scenarios"
+        )
+
+        produced: list[Draft] = []
+        task_steps: list[LLMStep[Draft]] = []
+        for rebuilt in rebuilt_envs:
+            for draft in rebuilt.source.drafts:
+                out = task_step(rebuilt, draft)
+                if isinstance(out, LLMStep):
+                    task_steps.append(out)
+                else:
+                    produced.append(out)
+        return produced + ctx.run_llm(task_steps)
+
+
+def scenario_sources(
+    part: Part, drafts: list[Draft], ctx: PartContext
+) -> list[ScenarioSource]:
+    """The scenarios of the drafts, each with the drafts that check a rebuild.
+
+    Every draft the server solves on a replay is kept, so the later parts of
+    the recipe can still choose among them. The drafts of a scenario share its
+    server: the source scenario's code, or the code an earlier part of the
+    recipe rebuilt. Scenarios whose server solves none of the drafts are left
+    out.
+    """
+    by_scenario: dict[str, list[Draft]] = {}
+    for draft in drafts:
+        if part.applicable(draft):
+            by_scenario.setdefault(normalize_scenario_name(draft.scenario), []).append(
+                draft
+            )
+    candidates = []
+    for scenario, members in by_scenario.items():
+        code = members[0].code or ctx.env_code.get(scenario)
+        if code is None:
+            continue
+        assert all(d.code == members[0].code for d in members), scenario
+        candidates.append((code, members))
+    if not candidates:
+        return []
+
+    def checked(candidate: tuple[str, list[Draft]]) -> ScenarioSource | None:
+        code, members = candidate
+        first = members[0]
+        try:
+            kept = replayed_drafts(ctx.replay, code, members)
+        except ServerStartError as e:
+            logger.warning(f"{first.scenario}: the server does not start: {e}")
+            return None
+        if not kept:
+            return None
+        return ScenarioSource(first.scenario, code, first.tools or [], kept)
+
+    with ThreadPoolExecutor(max_workers=max(1, ctx.workers)) as pool:
+        sources = [s for s in pool.map(checked, candidates) if s is not None]
+    logger.info(
+        f"Part {part.name}: {len(sources)}/{len(candidates)} scenarios have tasks to check a rebuild"
+    )
+    return sources
 
 
 class ToolRename(EnvPart):
     """Let the LLM give every tool a new name that still describes what it does."""
 
     name = "tool_rename"
+    writes = frozenset({TOOL_NAMES})
 
     def renames(self, source: ScenarioSource, rng: random.Random) -> LLMStep[Renames]:
         docs = {t["name"]: t.get("description", "") for t in source.tools}
 
         def finish(response: dict) -> Renames | Rejection:
-            names = response.get("tools")
-            if not isinstance(names, dict) or set(names) != set(docs):
-                return Rejection(
-                    f'"tools" must map exactly these tool names to new names: {sorted(docs)}'
-                )
-            if not all(isinstance(v, str) for v in names.values()):
-                return Rejection("Every new name must be a string.")
-            names = {old: new.strip() for old, new in names.items()}
+            names = name_map(response, "tools", set(docs), "tool")
+            if isinstance(names, Rejection):
+                return names
             if problems := rename_problems(source.tool_names, names):
                 return Rejection("; ".join(problems))
             return Renames(tools=names)
@@ -210,110 +328,90 @@ class ToolRenameRandom(EnvPart):
     """Give every tool a random name, so only the descriptions tell them apart."""
 
     name = "tool_rename_random"
+    writes = frozenset({TOOL_NAMES})
 
     def renames(self, source: ScenarioSource, rng: random.Random) -> Renames:
         taken = set(source.tool_names)
         names = {}
         for old in source.tool_names:
             new = old
-            while new in taken:
-                new = "".join(rng.choices(string.ascii_lowercase, k=RANDOM_NAME_LENGTH))
+            # a word of the code (e.g. "text") would be taken for the tool name
+            while new in taken or mentions(source.code, new, ignore_case=True):
+                length = rng.randint(MIN_RANDOM_NAME_LENGTH, MAX_RANDOM_NAME_LENGTH)
+                new = "".join(rng.choices(string.ascii_lowercase, k=length))
             taken.add(new)
             names[old] = new
         return Renames(tools=names)
 
 
-ENV_PARTS: dict[str, EnvPart] = {
-    part.name: part for part in [ToolRename(), ToolRenameRandom()]
-}
+def called_params(source: ScenarioSource) -> dict[str, list[str]]:
+    """Parameters, per tool, that the solved tasks' reference calls pass."""
+    taken = {t["name"]: properties(t) for t in source.tools}
+    used: dict[str, list[str]] = {}
+    for draft in source.drafts:
+        for call in draft.reference_calls or []:
+            params = taken.get(call["tool_name"], {})
+            for name in call.get("arguments") or {}:
+                if name in params and name not in used.get(call["tool_name"], []):
+                    used.setdefault(call["tool_name"], []).append(name)
+    return used
 
 
-# --------------------------------------------------------------- replay
+def param_rename_problems(
+    source: ScenarioSource, used: dict[str, list[str]], renames: dict[str, str]
+) -> list[str]:
+    """What makes the new parameter names unusable."""
+    problems = name_problems(renames, "parameter", keywords=False)
+    taken = {t["name"]: set(properties(t)) for t in source.tools}
+    for tool, params in used.items():
+        clash = sorted(taken[tool] & {renames[p] for p in params})
+        if clash:
+            problems.append(f"{clash} are already parameter names of {tool}")
+    return problems
 
 
-@dataclass
-class ReplayContext:
-    # gen_db.jsonl and gen_sample.jsonl, to create a fresh database
-    db_path: str
-    sample_path: str
-    # directory for the servers and databases of the replays
-    work_dir: str
+class ParamRename(EnvPart):
+    """Let the LLM give the parameters that the solved tasks pass new names."""
 
+    name = "param_rename"
+    writes = frozenset({PARAM_NAMES})
 
-@dataclass
-class Replay:
-    tools: list[dict]
-    # error text of each call, None if it succeeded
-    errors: list[str | None]
-    reward: str
+    def renames(
+        self, source: ScenarioSource, rng: random.Random
+    ) -> LLMStep[Renames] | None:
+        used = called_params(source)
+        if not used:
+            return None
+        tools = {t["name"]: t for t in source.tools}
+        docs: dict[str, dict[str, str]] = {}
+        for tool, params in used.items():
+            for param in params:
+                schema = properties(tools[tool])[param]
+                docs.setdefault(param, {})[tool] = str(schema.get("description") or "")
 
-
-async def _make_calls(
-    url: str, calls: list[dict]
-) -> tuple[list[dict], list[str | None]]:
-    """The listed tools, and the error text of each call (None if it succeeded)."""
-    executor = MCPToolExecutor(url, timeout=CALL_TIMEOUT)
-    tools = await executor.list_tools()
-    errors: list[str | None] = []
-    for call in calls:
-        try:
-            text = await executor.call_tool(
-                call["tool_name"], call.get("arguments") or {}
+        def finish(response: dict) -> Renames | Rejection:
+            names = name_map(response, "params", set(docs), "parameter")
+            if isinstance(names, Rejection):
+                return names
+            if problems := param_rename_problems(source, used, names):
+                return Rejection("; ".join(problems))
+            return Renames(
+                params={
+                    tool: {p: names[p] for p in params} for tool, params in used.items()
+                }
             )
-        except Exception as e:  # noqa: BLE001
-            errors.append(str(e))
-            continue
-        errors.append(text if text.startswith(TOOL_ERROR_PREFIX) else None)
-    return tools, errors
 
-
-def replay(
-    ctx: ReplayContext,
-    code: str,
-    db_scenario: str,
-    calls: list[dict],
-    verifier_code: str,
-    final_answer: str,
-) -> Replay:
-    """Make the calls on a fresh server and database, then grade the database.
-
-    The server runs the way `awm agent` runs it, on the database of db_scenario.
-    """
-    run_dir = os.path.join(ctx.work_dir, uuid.uuid4().hex)
-    os.makedirs(run_dir)
-    envs_path = os.path.join(run_dir, "env.jsonl")
-    tools_jsonl_save([{"scenario": db_scenario, "full_code": code}], envs_path)
-
-    async def session() -> tuple[RunningServer, list[dict], list[str | None]]:
-        async with serve_scenario(
-            db_scenario,
-            envs_path,
-            run_dir,
-            db_schema_path=ctx.db_path,
-            sample_path=ctx.sample_path,
-            timeout=SERVER_START_TIMEOUT,
-        ) as server:
-            tools, errors = await _make_calls(server.url, calls)
-        return server, tools, errors
-
-    server, tools, errors = asyncio.run(session())
-    entry = {"verification": {"code": verifier_code}}
-    reward, _ = run_verifier(
-        entry, "code", server.initial_db_path, server.db_path, final_answer, [], []
-    )
-    return Replay(tools=tools, errors=errors, reward=reward)
+        prompt = AUG_PARAM_RENAME_PROMPT.format(
+            params_json=json.dumps(docs, ensure_ascii=False)
+        )
+        return LLMStep(
+            [{"role": "user", "content": prompt}],
+            finish,
+            label=f"{source.scenario} parameter names",
+        )
 
 
 # --------------------------------------------------------- server code
-
-
-@dataclass
-class CheckTask:
-    """A source task the rebuilt server has to solve as the original one did."""
-
-    draft: Draft
-    # error status of each reference call on the original server
-    original_errors: list[bool]
 
 
 @dataclass
@@ -323,7 +421,6 @@ class RebuiltEnv:
     renames: Renames
     code: str
     tools: list[dict]
-    tasks: list[CheckTask]
 
 
 def rename_operation_ids(code: str, renames: Renames) -> str:
@@ -359,6 +456,59 @@ def _string_literals(tree: ast.AST) -> list[str]:
     ]
 
 
+def _canonical_lines(code: str, renames: Renames) -> list[str]:
+    """The code with every mention of a renamed name written as the new name.
+
+    Tool names count in any case and with spaces for underscores ("Create
+    order" for create_order), old or new; parameter names only as written,
+    with the alias= that accepts a new parameter name dropped. Python function
+    names are left out, since the client does not see them. Line breaks stay,
+    so line i is line i of the code.
+    """
+    code = re.sub(r"(\bdef[ \t]+)[A-Za-z_][A-Za-z0-9_]*", r"\1_", code)
+    forms: dict[str, str] = {}
+    for old, new in renames.tools.items():
+        for form in (old, old.replace("_", " "), new, new.replace("_", " ")):
+            forms[form.lower()] = new
+    # longer forms first, so that a name inside a longer one is left to it
+    for form in sorted(forms, key=len, reverse=True):
+        code = re.sub(_word(form), forms[form], code, flags=re.IGNORECASE)
+    for old, new in renames.renamed_params().items():
+        code = re.sub(_word(old), new, code)
+        alias = rf"""alias[ \t]*=[ \t]*(["']){re.escape(new)}\1"""
+        code = re.sub(rf"{alias}[ \t]*,[ \t]*", "", code)
+        code = re.sub(rf",[ \t]*{alias}", "", code)
+        code = re.sub(alias, "", code)
+    return [line.rstrip() for line in code.splitlines()]
+
+
+def unrelated_change_problems(
+    source_code: str, code: str, renames: Renames
+) -> list[str]:
+    """Changes of the code that are not a renamed name, as feedback."""
+    before = _canonical_lines(source_code, renames)
+    after = _canonical_lines(code, renames)
+    if before == after:
+        return []
+    source_lines, lines = source_code.splitlines(), code.splitlines()
+    changes = []
+    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op != "equal":
+            old = "\n".join(source_lines[i1:i2])
+            new = "\n".join(lines[j1:j2])
+            changes.append(f"line {i1 + 1}: {old.strip()!r} -> {new.strip()!r}")
+    text = "\n".join(changes)
+    if len(text) > MAX_FEEDBACK_CHARS:
+        text = text[:MAX_FEEDBACK_CHARS] + "\n..."
+    head = (
+        "These changes are not renames of a tool or parameter name. Undo them: "
+        "only the names themselves may change, and other words stay as they were, "
+        "even words that are part of a name."
+    )
+    return [f"{head}\n{text}"]
+
+
 def _listed_text(tool: dict) -> str:
     texts = [tool.get("description") or ""]
     for schema in properties(tool).values():
@@ -370,13 +520,9 @@ def listing_problems(
     source: ScenarioSource, renames: Renames, tools: list[dict]
 ) -> list[str]:
     """How the listed tools differ from the renamed original tools."""
-    problems = []
     listed = {t["name"]: t for t in tools}
     expected = {renames.tool(t["name"]): t for t in source.tools}
-    if set(listed) != set(expected):
-        problems.append(
-            f"The server lists the tools {sorted(listed)}, expected {sorted(expected)}"
-        )
+    problems = tool_set_problems(set(listed), set(expected))
     for name, original in expected.items():
         if name not in listed:
             continue
@@ -400,13 +546,12 @@ def replay_problems(
     rebuilt_code: str,
     source: ScenarioSource,
     renames: Renames,
-    tasks: list[CheckTask],
 ) -> tuple[list[dict], list[str]]:
     """Run the renamed reference calls; the listed tools and what went wrong."""
     tools: list[dict] = []
     problems = []
-    for task in tasks:
-        draft = task.draft
+    for draft in source.drafts:
+        assert draft.call_errors is not None
         calls = [renames.call(c) for c in draft.reference_calls or []]
         result = replay(
             ctx,
@@ -418,7 +563,7 @@ def replay_problems(
         )
         tools = result.tools
         for i, (call, error, was_error) in enumerate(
-            zip(calls, result.errors, task.original_errors, strict=True)
+            zip(calls, result.errors, draft.call_errors, strict=True)
         ):
             if (error is not None) != was_error:
                 outcome = (
@@ -442,7 +587,6 @@ def code_step(
     source: ScenarioSource,
     part: str,
     renames: Renames,
-    tasks: list[CheckTask],
 ) -> LLMStep[RebuiltEnv]:
     """Ask for the edits that rename the server, and check the rebuilt server."""
     base = rename_operation_ids(source.code, renames)
@@ -462,8 +606,10 @@ def code_step(
         ]
         if old:
             return Rejection(f"String literals of the code still mention {old}")
+        if problems := unrelated_change_problems(source.code, code, renames):
+            return Rejection("\n".join(problems))
         try:
-            tools, problems = replay_problems(ctx, code, source, renames, tasks)
+            tools, problems = replay_problems(ctx, code, source, renames)
         except ServerStartError as e:
             return Rejection(
                 f"The server does not start. Its output ends with:\n{e.output[-MAX_FEEDBACK_CHARS:]}"
@@ -471,7 +617,7 @@ def code_step(
         problems = listing_problems(source, renames, tools) + problems
         if problems:
             return Rejection("\n".join(problems))
-        return RebuiltEnv(source, part, renames, code, tools, tasks)
+        return RebuiltEnv(source, part, renames, code, tools)
 
     def check_prompt(rebuilt: RebuiltEnv) -> str:
         diff = difflib.unified_diff(
@@ -497,197 +643,32 @@ def code_step(
 # ---------------------------------------------------------------- tasks
 
 
-def env_scenario(source_scenario: str, part: str) -> str:
-    return f"{source_scenario}{SCENARIO_SEPARATOR}{part}"
-
-
-def task_step(rebuilt: RebuiltEnv, task: CheckTask) -> Draft | LLMStep[Draft]:
-    """The source task for the rebuilt environment, rewritten if it names a renamed tool."""
-    source = task.draft
-    draft = Draft(
-        scenario=env_scenario(rebuilt.source.scenario, rebuilt.part),
-        source_task_idx=source.source_task_idx,
-        task=source.task,
-        source_verifier_code=source.source_verifier_code,
+def task_step(rebuilt: RebuiltEnv, draft: Draft) -> Draft | LLMStep[Draft]:
+    """The draft on the rebuilt server, its task rewritten if it names a renamed tool."""
+    moved = draft.evolve(
+        rebuilt.part,
+        code=rebuilt.code,
         tools=rebuilt.tools,
-        reference_calls=[rebuilt.renames.call(c) for c in source.reference_calls or []],
-        reference_answer=source.reference_answer,
-        part=rebuilt.part,
+        reference_calls=[rebuilt.renames.call(c) for c in draft.reference_calls or []],
     )
-    mentioned = rebuilt.renames.mentioned_in(source.task)
+    mentioned = rebuilt.renames.mentioned_in(draft.task)
     if not mentioned:
-        return draft
+        return moved
     rewritten = dataclasses.replace(
-        draft,
-        banned_mentions=sorted(mentioned),
-        required_mentions=sorted(set(mentioned.values())),
+        moved,
+        banned_mentions=[*draft.banned_mentions, *sorted(mentioned)],
+        required_mentions=[
+            *(m for m in draft.required_mentions if m not in mentioned),
+            *sorted(set(mentioned.values())),
+        ],
     )
-
-    def finish(response: dict) -> Draft | Rejection:
-        return accept_task(rewritten, response)
 
     prompt = AUG_TASK_RENAME_PROMPT.format(
-        task=source.task,
-        renames=json.dumps(mentioned, ensure_ascii=False),
-        keep_values=json.dumps(keep_values(rewritten), ensure_ascii=False),
-    )
-    return rewrite_step(rewritten, prompt, finish)
-
-
-def to_variant(draft: Draft, source_scenario: str) -> Variant:
-    meta = TaskMeta(
-        augmentations=[draft.part],
-        source_task_idx=draft.source_task_idx,
-        source_scenario=source_scenario,
-    )
-    return Variant(
-        scenario=draft.scenario,
         task=draft.task,
-        meta=meta,
-        verifier_code=draft.source_verifier_code,
+        renames=json.dumps(mentioned, ensure_ascii=False),
+        keep_values=json.dumps(must_keep(rewritten), ensure_ascii=False),
     )
-
-
-# ------------------------------------------------------------ pipeline
-
-
-@dataclass
-class EnvVariant:
-    """A rebuilt environment and its tasks, ready to be added as a scenario."""
-
-    scenario: str
-    source_scenario: str
-    part: str
-    code: str
-    variants: list[Variant]
-
-
-RunTaskLLM = Callable[[list[LLMStep[Draft]]], list[Draft]]
-
-
-def check_tasks(
-    ctx: ReplayContext,
-    source: ScenarioSource,
-    num_tasks: int,
-    rng: random.Random,
-    oversample: int = 2,
-) -> list[CheckTask]:
-    """Up to num_tasks solved tasks whose reference calls solve them on a replay.
-
-    A run of the agent may have depended on something a replay does not
-    reproduce (e.g. the time), so tasks are kept only if the original server
-    solves them again.
-    """
-    drafts = [d for d in source.drafts if d.reference_calls]
-    rng.shuffle(drafts)
-    tasks = []
-    for draft in drafts[: num_tasks * oversample]:
-        if len(tasks) == num_tasks:
-            break
-        try:
-            result = replay(
-                ctx,
-                source.code,
-                source.scenario,
-                draft.reference_calls or [],
-                draft.source_verifier_code,
-                draft.reference_answer,
-            )
-        except ServerStartError as e:
-            logger.warning(
-                f"{source.scenario}: the original server does not start: {e}"
-            )
-            return []
-        if result.reward == "complete":
-            tasks.append(CheckTask(draft, [e is not None for e in result.errors]))
-    return tasks
-
-
-def build_env_variants(
-    part_names: list[str],
-    sources: list[ScenarioSource],
-    ctx: ReplayContext,
-    complete: Complete,
-    run_task_llm: RunTaskLLM,
-    num_per_part: int,
-    seed: int,
-    max_generations: int,
-    workers: int,
-) -> list[EnvVariant]:
-    """A rebuilt environment per scenario and part, with up to num_per_part tasks."""
-    if not part_names:
-        return []
-    os.makedirs(ctx.work_dir, exist_ok=True)
-
-    def tasks_for(source: ScenarioSource) -> list[CheckTask]:
-        rng = random.Random(f"{seed}:{normalize_scenario_name(source.scenario)}")
-        return check_tasks(ctx, source, num_per_part, rng)
-
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        tasks_of = dict(
-            zip(
-                (s.scenario for s in sources),
-                pool.map(tasks_for, sources),
-                strict=True,
-            )
-        )
-    usable = [s for s in sources if tasks_of[s.scenario]]
-    logger.info(f"{len(usable)}/{len(sources)} scenarios have tasks to check a rebuild")
-
-    env_variants: list[EnvVariant] = []
-    for name in part_names:
-        part = ENV_PARTS[name]
-        renames: dict[str, Renames] = {}
-        name_steps: list[LLMStep[tuple[str, Renames]]] = []
-        for source in usable:
-            rng = random.Random(
-                f"{seed}:{name}:{normalize_scenario_name(source.scenario)}"
-            )
-            out = part.renames(source, rng)
-            if isinstance(out, LLMStep):
-                name_steps.append(_tagged(out, source.scenario))
-            elif out is not None:
-                renames[source.scenario] = out
-        renames.update(dict(refine(name_steps, complete, max_generations)))
-
-        steps = [
-            code_step(ctx, s, name, renames[s.scenario], tasks_of[s.scenario])
-            for s in usable
-            if s.scenario in renames
-        ]
-        rebuilt_envs = refine(steps, complete, max_generations, workers=workers)
-
-        task_steps: list[LLMStep[Draft]] = []
-        drafts: list[Draft] = []
-        for rebuilt in rebuilt_envs:
-            for task in rebuilt.tasks:
-                out = task_step(rebuilt, task)
-                if isinstance(out, LLMStep):
-                    task_steps.append(out)
-                else:
-                    drafts.append(out)
-        drafts.extend(run_task_llm(task_steps))
-
-        for rebuilt in rebuilt_envs:
-            scenario = env_scenario(rebuilt.source.scenario, name)
-            mine = sorted(
-                (d for d in drafts if d.scenario == scenario),
-                key=lambda d: d.source_task_idx,
-            )
-            if mine:
-                env_variants.append(
-                    EnvVariant(
-                        scenario=scenario,
-                        source_scenario=rebuilt.source.scenario,
-                        part=name,
-                        code=rebuilt.code,
-                        variants=[to_variant(d, rebuilt.source.scenario) for d in mine],
-                    )
-                )
-        logger.info(
-            f"Part {name}: {len(rebuilt_envs)} environments rebuilt from {len(steps)} scenarios"
-        )
-    return env_variants
+    return rewrite_step(rewritten, prompt)
 
 
 def _tagged(step: LLMStep[Renames], scenario: str) -> LLMStep[tuple[str, Renames]]:
@@ -698,72 +679,3 @@ def _tagged(step: LLMStep[Renames], scenario: str) -> LLMStep[tuple[str, Renames
         return out if isinstance(out, Rejection) else (scenario, out)
 
     return LLMStep(step.messages, finish, label=step.label)
-
-
-# ------------------------------------------------------ dataset assembly
-
-
-def merge_env_variants(
-    rows: dict[str, list[dict]],
-    env_verifier_rows: list[dict],
-    env_variants: list[EnvVariant],
-    keep_sources: set[str],
-) -> tuple[dict[str, list[dict]], list[dict]]:
-    """Scenario files and verifier rows of rebuilt environments, replaced.
-
-    rows: rows of the "envs", "db", "sample" and "tasks" files.
-    env_verifier_rows: verifier rows of rebuilt environments.
-    Rebuilt environments of scenarios in keep_sources (normalized) stay; the
-    others are dropped, and env_variants are added.
-    """
-
-    def kept(row: dict) -> bool:
-        return (
-            not is_rebuilt_env_row(row)
-            or normalize_scenario_name(row["source_scenario"]) in keep_sources
-        )
-
-    new_rows = {kind: [r for r in rs if kept(r)] for kind, rs in rows.items()}
-    new_verifiers = [r for r in env_verifier_rows if kept(r)]
-
-    def source_row(kind: str, scenario: str) -> dict:
-        norm = normalize_scenario_name(scenario)
-        return next(
-            r
-            for r in rows[kind]
-            if not is_rebuilt_env_row(r)
-            and normalize_scenario_name(r["scenario"]) == norm
-        )
-
-    for env in env_variants:
-        marker = {
-            "scenario": env.scenario,
-            "source_scenario": env.source_scenario,
-            "augmentation": env.part,
-        }
-        new_rows["envs"].append(
-            {**source_row("envs", env.source_scenario), **marker, "full_code": env.code}
-        )
-        for kind in ("db", "sample"):
-            new_rows[kind].append({**source_row(kind, env.source_scenario), **marker})
-        new_rows["tasks"].append(
-            {
-                **marker,
-                "tasks": [v.task for v in env.variants],
-                "task_meta": [v.meta.model_dump() for v in env.variants],
-            }
-        )
-        for idx, variant in enumerate(env.variants):
-            new_verifiers.append(
-                {
-                    "scenario": env.scenario,
-                    "task_idx": idx,
-                    "task": variant.task,
-                    "verification": {"code": variant.verifier_code},
-                    "augmented": True,
-                    "augmentations": variant.meta.augmentations,
-                    "source_task_idx": variant.meta.source_task_idx,
-                    "source_scenario": env.source_scenario,
-                }
-            )
-    return new_rows, new_verifiers

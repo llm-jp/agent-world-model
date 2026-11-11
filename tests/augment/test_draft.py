@@ -8,6 +8,7 @@ from awm.core.augment.draft import (
     finalize,
     keep_values,
     mentioned_tool_names,
+    must_keep,
     param_values_in_task,
     rewritten_task,
     values_in_task,
@@ -71,6 +72,22 @@ def test_rewritten_task_enforces_the_draft_constraints():
         3,
     ]:
         assert isinstance(rewritten_task(draft, {"task": bad}), Rejection)
+
+
+def test_rewritten_task_keeps_the_notations_of_an_earlier_rewrite():
+    task = "Find 'blue mug' and order product forty-two with the note 'gift'"
+    draft = make_draft(task=task, value_rewrites={"42": "forty-two"})
+    assert must_keep(draft) == ["blue mug", "gift", "forty-two"]
+    kept = "Get 'blue mug', order forty-two, note 'gift'"
+    assert rewritten_task(draft, {"task": kept}) == kept
+    rejection = rewritten_task(draft, {"task": "Get 'blue mug', order 42, note 'gift'"})
+    assert isinstance(rejection, Rejection) and "forty-two" in rejection.reason
+
+
+def test_must_keep_lists_each_text_once():
+    draft = make_draft(required_mentions=["42", "list_coupons"])
+    assert must_keep(draft) == ["blue mug", "42", "gift", "list_coupons"]
+    assert must_keep(draft, []) == ["42", "list_coupons"]
 
 
 def test_rejection_names_the_missing_values():
@@ -144,30 +161,45 @@ def test_followup_verifier_fails_when_original_task_not_done(tmp_path):
 
 
 def test_finalize_without_changes_keeps_the_original_verifier():
-    variant = finalize(make_draft(part="task_paraphrase"))
-    assert variant.meta.tool_view is None
+    variant = finalize(make_draft(parts=("task_ambiguous",)))
+    assert variant.meta.hidden_tools == []
     assert variant.meta.turns == []
-    assert variant.meta.augmentations == ["task_paraphrase"]
+    assert variant.meta.augmentations == ["task_ambiguous"]
     assert variant.verifier_code == SOURCE_VERIFIER
 
 
 def test_finalize_hides_the_tool_in_the_first_turn_only():
     draft = make_draft(
-        part="miss_func",
+        parts=("miss_func",),
         hidden_tool="create_order",
         followup="create_order is back.",
         forbidden_calls=[{"tool_name": "create_order", "param": None}],
     )
     variant = finalize(draft)
-    assert variant.meta.tool_view == ToolView(hide_tools=["create_order"])
+    assert variant.meta.hidden_tools == ["create_order"]
     [turn] = variant.meta.turns
     assert turn.user == "create_order is back."
-    assert turn.tool_view == ToolView()
+    assert turn.shown_tools == ["create_order"]
     assert "unchanged_db_before_followup" in variant.verifier_code
 
 
-def test_finalize_followup_without_hidden_tool_keeps_the_view():
+def test_finalize_leaves_the_view_to_the_server():
     view = ToolView(tool_descriptions={"create_order": "Place an order."})
     meta = finalize(make_draft(view=view, followup="It is 42.")).meta
-    assert meta.tool_view == view
-    assert meta.turns[0].tool_view is None
+    assert meta.hidden_tools == []
+    assert meta.turns[0].shown_tools == []
+
+
+def test_finalize_hides_only_the_tool_of_the_followup_over_a_served_view():
+    view = ToolView(extra_params={"create_order": {"trace_id": {"type": "string"}}})
+    draft = make_draft(
+        parts=("add_params", "miss_func"),
+        view=view,
+        hidden_tool="create_order",
+        followup="create_order is back.",
+    )
+    meta = finalize(draft).meta
+    assert meta.augmentations == ["add_params", "miss_func"]
+    assert meta.source_scenario == "Shop"
+    assert meta.hidden_tools == ["create_order"]
+    assert meta.turns[0].shown_tools == ["create_order"]

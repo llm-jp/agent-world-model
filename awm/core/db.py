@@ -16,7 +16,7 @@ from awm.tools import (
     tools_jsonl_save,
     tools_robust_json_loads,
     tools_token_count,
-    with_rebuilt_env_rows,
+    with_augmented_env_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,7 @@ def create_sqlite_database(
 
 
 def generate_all_databases(args: Config):
-    # rebuilt environments and augmented tasks belong to `awm gen aug`
+    # augmented environments and tasks belong to `awm gen aug`
     user_intentions = original_task_rows(tools_jsonl_load(args.input))
 
     logger.info(f"Preparing batch requests for {len(user_intentions)} scenarios...")
@@ -327,7 +327,7 @@ def generate_all_databases(args: Config):
         current_items = next_items
         current_requests = next_requests
 
-    tools_jsonl_save(with_rebuilt_env_rows(results, args.output), args.output)
+    tools_jsonl_save(with_augmented_env_rows(results, args.output), args.output)
 
     logger.info(f"\nDatabase schemas saved to {args.output}")
     logger.info(

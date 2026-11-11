@@ -491,14 +491,15 @@ def find_scenario_entry(
 
 # ---------------------------------------------------- augmented data
 #
-# `awm gen aug` appends augmented tasks to gen_tasks.jsonl (marked by a parallel
-# task_meta list) and adds rebuilt environments as scenarios of their own to the
+# `awm gen aug` adds augmented environments as scenarios of their own to the
 # scenario files (marked by source_scenario). The generation stages read only
-# the original data and keep the rebuilt environments when they rewrite a file.
+# the original data and keep the augmented environments when they rewrite a
+# file. A gen_tasks.jsonl row may also carry augmented tasks after its original
+# ones, marked by a parallel task_meta list; they are skipped as well.
 
 
-def is_rebuilt_env_row(row: dict) -> bool:
-    """Whether a row of a scenario or verifier file belongs to a rebuilt environment."""
+def is_augmented_env_row(row: dict) -> bool:
+    """Whether a row of a scenario or verifier file belongs to an augmented environment."""
     return "source_scenario" in row
 
 
@@ -515,7 +516,7 @@ def original_task_rows(rows: list[dict]) -> list[dict]:
     """gen_tasks.jsonl rows of the original scenarios with their original tasks."""
     originals = []
     for row in rows:
-        if is_rebuilt_env_row(row):
+        if is_augmented_env_row(row):
             continue
         original = {k: v for k, v in row.items() if k != "task_meta"}
         original["tasks"] = strip_augmented(row)
@@ -523,15 +524,16 @@ def original_task_rows(rows: list[dict]) -> list[dict]:
     return originals
 
 
-def with_rebuilt_env_rows(results: list[dict], output_path: str) -> list[dict]:
-    """The results plus the rebuilt environments' rows already in the output file."""
+def with_augmented_env_rows(results: list[dict], output_path: str) -> list[dict]:
+    """The results plus the augmented environments' rows already in the output file."""
     if not os.path.exists(output_path):
         return results
     have = {normalize_scenario_name(r["scenario"]) for r in results}
     kept = [
         r
         for r in tools_jsonl_load(output_path)
-        if is_rebuilt_env_row(r) and normalize_scenario_name(r["scenario"]) not in have
+        if is_augmented_env_row(r)
+        and normalize_scenario_name(r["scenario"]) not in have
     ]
     return results + kept
 

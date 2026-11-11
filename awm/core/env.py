@@ -24,7 +24,7 @@ from awm.tools import (
     tools_jsonl_save,
     tools_robust_json_loads,
     tools_token_count,
-    with_rebuilt_env_rows,
+    with_augmented_env_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -357,7 +357,7 @@ def generate_all_environments(args: Config):
     if not items_to_generate:
         logger.info("all scenarios already validated via resume, nothing to generate.")
         os.makedirs(os.path.dirname(args.output), exist_ok=True)
-        tools_jsonl_save(with_rebuilt_env_rows(results, args.output), args.output)
+        tools_jsonl_save(with_augmented_env_rows(results, args.output), args.output)
         logger.info(
             f"total scenarios: {len(results)}/{len(processed_api_spec_data)}, saved to {args.output}"
         )
@@ -590,7 +590,7 @@ def generate_all_environments(args: Config):
         current_requests = next_requests
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    tools_jsonl_save(with_rebuilt_env_rows(results, args.output), args.output)
+    tools_jsonl_save(with_augmented_env_rows(results, args.output), args.output)
 
     logger.info(
         f"total scenarios processed (generated environments): {len(results)}/{len(processed_api_spec_data)} (resumed={len(validated_scenarios)}, newly generated={len(results) - len(validated_scenarios)}), saved to {args.output}"

@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import jsonschema
 from fastapi import FastAPI
-from fastapi.openapi.utils import get_openapi
+from fastapi.openapi import utils as openapi_utils
 from mcp import types
 from mcp.server import Server, ServerRequestContext
 from mcp.server.streamable_http_manager import (
@@ -33,7 +33,9 @@ class ToolCallError(Exception):
 
 
 def build_tools(app: FastAPI) -> tuple[list[types.Tool], dict[str, dict[str, Any]]]:
-    openapi_schema = get_openapi(
+    # looked up at call time: the server code of an augmented environment wraps
+    # it to present its tool view (awm/core/view_server.py)
+    openapi_schema = openapi_utils.get_openapi(
         title=app.title,
         version=app.version,
         openapi_version=app.openapi_version,
